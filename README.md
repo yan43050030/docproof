@@ -12,14 +12,10 @@
 
 ## 参考项目
 
-本项目借鉴以下两个优秀开源项目：
-
-| 项目 | 说明 | 许可证 |
-|------|------|--------|
-| [pycorrector](https://github.com/shibing624/pycorrector) | 中文文本纠错引擎，提供 Kenlm/MacBERT/T5/Qwen 多级模型 | Apache 2.0 |
-| [LanguageTool](https://github.com/languagetool-org/languagetool) | 多语言校对引擎，拥有成熟的文档插件架构 | LGPL 2.1 |
-
-参考源码已克隆到 `references/` 目录。
+| 项目 | 说明 | 许可证 | 集成方式 |
+|------|------|--------|----------|
+| [pycorrector](https://github.com/shibing624/pycorrector) | 中文文本纠错引擎，提供 Kenlm/MacBERT/T5/Qwen 多级模型 | Apache 2.0 | 源码直接集成于 `third_party/pycorrector/`，可直接修改 |
+| [LanguageTool](https://github.com/languagetool-org/languagetool) | 多语言校对引擎，拥有成熟的文档插件架构 | LGPL 2.1 | 架构参考，源码位于本地 `references/`（未上传） |
 
 ## 技术栈
 
@@ -32,6 +28,16 @@
 
 详见 [PLAN.md](PLAN.md)
 
+## 项目结构
+
+```
+docproof/                   # 本项目的应用包
+third_party/pycorrector/    # 集成的 pycorrector 源码（可直接修改）
+references/                 # 本地参考项目（不参与构建）
+```
+
 ## 许可证
 
-Apache License 2.0
+本项目: MIT License
+
+`third_party/pycorrector/`: Apache License 2.0（原始许可证不变）

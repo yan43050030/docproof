@@ -270,11 +270,12 @@ def apply_correction(run, offset_in_run, error_len, correct_word):
 docproof/
 ├── README.md
 ├── PLAN.md                    # 本文件
-├── LICENSE                    # Apache 2.0
+├── LICENSE                    # MIT
 ├── .gitignore
 ├── pyproject.toml             # 项目配置和依赖
-├── references/                # 参考项目源码（gitignored）
-│   ├── pycorrector/           # 浅克隆
+├── third_party/               # 集成的第三方源码（可修改）
+│   └── pycorrector/           # 中文纠错引擎（fork 自 shibing624/pycorrector, Apache 2.0）
+├── references/                # 参考项目源码（本地，gitignored）
 │   └── languagetool/          # 浅克隆
 │
 ├── docproof/                  # 主包
