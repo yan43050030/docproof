@@ -1,0 +1,83 @@
+name: Build Windows Portable
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:  # manual trigger
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install PySide6 python-docx kenlm pycorrector pyinstaller
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller --noconfirm `
+            --name="DocProof" `
+            --windowed `
+            --onedir `
+            --add-data="third_party/pycorrector/pycorrector;pycorrector" `
+            --add-data="models;models" `
+            --hidden-import="pycorrector" `
+            --hidden-import="pycorrector.corrector" `
+            --hidden-import="pycorrector.detector" `
+            --hidden-import="pycorrector.proper_corrector" `
+            --hidden-import="pycorrector.utils" `
+            --hidden-import="pycorrector.utils.text_utils" `
+            --hidden-import="pycorrector.utils.tokenizer" `
+            --hidden-import="pycorrector.utils.get_file" `
+            --hidden-import="kenlm" `
+            --hidden-import="pypinyin" `
+            --hidden-import="jieba" `
+            --exclude-module="torch" `
+            --exclude-module="transformers" `
+            --exclude-module="paddle" `
+            docproof/__main__.py
+
+      - name: Create portable package
+        run: |
+          Rename-Item "dist/DocProof" "DocProof-portable"
+          @"
+          DocProof 便携版使用说明
+          ========================
+
+          1. 将语言模型文件(.klm)放入 models 文件夹
+          2. 双击 DocProof.exe 启动
+          3. 首次启动请先放入模型文件
+
+          推荐模型下载:
+            标准模型(141MB): https://github.com/shibing624/pycorrector/releases/download/1.0.0/people2014corpus_chars.klm
+            大型模型(2.95GB): https://deepspeech.bj.bcebos.com/zh_lm/zh_giga.no_cna_cmn.prune01244.klm
+
+          放入 models/ 目录后启动即可自动识别。
+          "@ | Out-File -FilePath "dist/DocProof-portable/使用说明.txt" -Encoding UTF8
+
+      - name: Create ZIP archive
+        run: |
+          Compress-Archive -Path "dist/DocProof-portable/*" -DestinationPath "DocProof-windows-portable.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DocProof-windows-portable
+          path: DocProof-windows-portable.zip
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: DocProof-windows-portable.zip
+          generate_release_notes: true

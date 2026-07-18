@@ -28,6 +28,7 @@ from docproof.document.docx_handler import DocxHandler
 from docproof.engine.engine_manager import EngineManager
 from docproof.ui.correction_view import CorrectionView
 from docproof.ui.error_list import ErrorListPanel
+from docproof.ui.dialogs.settings import SettingsDialog
 from docproof.ui.welcome_wizard import WelcomeWizard
 
 
@@ -377,17 +378,15 @@ class MainWindow(QMainWindow):
         )
 
     def _show_model_manager(self):
-        """Show the welcome wizard for model management."""
-        wizard = WelcomeWizard(self)
-        if wizard.exec():
-            # User clicked "开始使用" - reload engine with selected model
-            model_key = wizard.get_selected_model()
-            if model_key and model_key != self._engine_manager.current_model_key:
-                ok, msg = self._engine_manager.load(model_key)
-                if ok:
-                    self._status_text.setText(msg)
-                else:
-                    QMessageBox.warning(self, "模型加载失败", msg)
+        """Show the settings dialog for model management."""
+        dialog = SettingsDialog(self._engine_manager, self)
+        dialog.exec()
+        # Update status after settings change
+        if self._engine_manager.is_loaded:
+            from docproof.config import MODELS
+            key = self._engine_manager.current_model_key
+            name = MODELS[key]['name'] if key else '未知'
+            self._status_text.setText(f"已切换模型: {name}")
 
     # ---- Helpers ----
 
