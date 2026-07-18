@@ -12,12 +12,12 @@ __pycache__/
 dist/
 build/
 
-# Models (downloaded at runtime)
-*.klm
-*.bin
-*.pth
-*.pt
-models/
+# Models (user-downloaded, keep directory but ignore files)
+models/*.klm
+models/*.bin
+models/*.pth
+models/*.pt
+!models/.gitkeep
 
 # IDE
 .idea/
