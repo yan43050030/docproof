@@ -24,9 +24,16 @@
 - **文档处理**: python-docx
 - **打包分发**: PyInstaller
 
-## 开发计划
+## 文档导航
 
-详见 [PLAN.md](PLAN.md)
+| 文档 | 内容 |
+|------|------|
+| [PLAN.md](PLAN.md) | 架构设计、模块划分、实现阶段 |
+| [REFERENCES.md](REFERENCES.md) | 参考项目开发指南（写代码时看哪个文件） |
+
+## 运行原理
+
+→ 见下方说明，或 [PLAN.md](PLAN.md) 中的"校对引擎层"章节
 
 ## 项目结构
 
