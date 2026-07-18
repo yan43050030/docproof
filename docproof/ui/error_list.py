@@ -23,6 +23,7 @@ class ErrorListPanel(QWidget):
     error_selected = Signal(int)  # error index
     error_accepted = Signal(int)  # error index
     error_ignored = Signal(int)  # error index
+    accept_all = Signal()  # accept all errors at once
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -81,6 +82,20 @@ class ErrorListPanel(QWidget):
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(8)
 
+        self.accept_all_btn = QPushButton("✓ 全部接受")
+        self.accept_all_btn.setStyleSheet("""
+            QPushButton {
+                background: #2563EB;
+                color: white;
+                padding: 6px 12px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background: #1D4ED8; }
+        """)
+        self.accept_all_btn.clicked.connect(self._accept_all)
+        btn_layout.addWidget(self.accept_all_btn)
+
         self.accept_btn = QPushButton("✓ 接受")
         self.accept_btn.setStyleSheet("""
             QPushButton {
@@ -130,14 +145,10 @@ class ErrorListPanel(QWidget):
             item = QListWidgetItem(text)
             item.setData(Qt.ItemDataRole.UserRole, i)
 
-            if i in self._accepted:
-                item.setForeground(Qt.GlobalColor.gray)
-            elif i in self._ignored:
-                item.setForeground(Qt.GlobalColor.lightGray)
-
             self.list_widget.addItem(item)
 
         self.count_label.setText(f"{visible_count} 处")
+        self.accept_all_btn.setEnabled(visible_count > 0)
 
     def _on_row_changed(self, row: int) -> None:
         if row >= 0:
@@ -152,6 +163,17 @@ class ErrorListPanel(QWidget):
         idx = item.data(Qt.ItemDataRole.UserRole)
         self._accepted.add(idx)
         self.error_accepted.emit(idx)
+        self._rebuild_list()
+
+    def _accept_all(self) -> None:
+        """Accept all remaining visible errors."""
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            if item is None:
+                continue
+            idx = item.data(Qt.ItemDataRole.UserRole)
+            self._accepted.add(idx)
+        self.accept_all.emit()
         self._rebuild_list()
 
     def _ignore_current(self) -> None:
@@ -174,3 +196,7 @@ class ErrorListPanel(QWidget):
             if i not in self._ignored and i not in self._accepted:
                 remaining.append(err)
         return remaining
+
+    @property
+    def accepted_indices(self) -> set[int]:
+        return self._accepted

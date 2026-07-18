@@ -16,6 +16,34 @@ class DocProofApp:
     def __init__(self):
         self._app = QApplication(sys.argv)
         self._app.setApplicationName(APP_NAME)
+
+        # Force light theme so text is visible regardless of system dark mode
+        self._app.setStyle("Fusion")
+        self._app.setStyleSheet("""
+            QWidget {
+                color: #1a1a1a;
+                background-color: #FFFFFF;
+            }
+            QMenuBar {
+                background-color: #F5F5F5;
+            }
+            QMenuBar::item:selected {
+                background-color: #E0E0E0;
+            }
+            QStatusBar {
+                background-color: #F5F5F5;
+            }
+            QToolBar {
+                background-color: #F8F9FA;
+            }
+            QToolTip {
+                background-color: #333;
+                color: white;
+                border: none;
+                padding: 4px;
+            }
+        """)
+
         self._engine_manager = EngineManager()
         self._main_window: MainWindow | None = None
 
@@ -46,7 +74,11 @@ class DocProofApp:
         self._main_window = MainWindow(self._engine_manager)
         self._main_window.show()
 
-        return self._app.exec()
+        ret = self._app.exec()
+
+        # Clean up engine before interpreter shutdown
+        self._engine_manager.unload()
+        return ret
 
     def _show_welcome(self) -> bool:
         """Show the welcome wizard. Returns True if user proceeds."""

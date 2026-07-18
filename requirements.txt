@@ -2,3 +2,10 @@ PySide6>=6.5.0
 python-docx>=1.0.0
 kenlm>=0.3.0
 pycorrector>=1.1.0
+
+# MacBERT deep learning engine (optional but recommended)
+torch>=2.0.0
+transformers>=4.30.0
+
+# Build
+pyinstaller>=6.0.0

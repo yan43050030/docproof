@@ -17,6 +17,14 @@ PROJECT_MODELS_DIR = os.path.join(_PROJECT_ROOT, "models")
 USER_MODELS_DIR = os.path.join(os.path.expanduser("~/.docproof"), "models")
 MODEL_SEARCH_DIRS = [PROJECT_MODELS_DIR, USER_MODELS_DIR]
 
+# MacBERT HuggingFace cache — store model files inside project for portability
+_MACBERT_CACHE = os.path.join(PROJECT_MODELS_DIR, "macbert_cache")
+os.makedirs(_MACBERT_CACHE, exist_ok=True)
+if "HF_HOME" not in os.environ:
+    os.environ["HF_HOME"] = _MACBERT_CACHE
+if "TRANSFORMERS_CACHE" not in os.environ:
+    os.environ["TRANSFORMERS_CACHE"] = _MACBERT_CACHE
+
 # Make third_party/pycorrector importable
 _THIRD_PARTY = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "third_party", "pycorrector")
@@ -75,6 +83,14 @@ MODELS = {
 
 DEFAULT_MODEL = "macbert"  # prefer MacBERT if available
 
+# Priority order: best engine first, fall back to simpler ones
+MODEL_PRIORITY = [
+    "macbert",
+    "kenlm-large",
+    "kenlm-base",
+    "kenlm-tiny",
+]
+
 
 def _check_dependencies(requires: list[str] | None) -> bool:
     """Check if required Python packages are installed."""
@@ -122,8 +138,12 @@ def any_model_downloaded() -> bool:
 
 
 def get_available_model() -> str | None:
-    """Return the first available model key, or None. Prefers recommended."""
-    for key in [DEFAULT_MODEL] + [k for k in MODELS if k != DEFAULT_MODEL]:
+    """Return the best available model key, or None. Respects MODEL_PRIORITY order."""
+    for key in MODEL_PRIORITY:
         if is_model_available(key):
+            return key
+    # Also check any models not in the priority list
+    for key in MODELS:
+        if key not in MODEL_PRIORITY and is_model_available(key):
             return key
     return None

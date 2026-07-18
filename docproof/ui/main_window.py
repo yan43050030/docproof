@@ -8,6 +8,7 @@ from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtGui import QAction, QFont, QIcon, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -23,7 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from docproof.config import APP_NAME, PROJECT_MODELS_DIR, MODEL_SEARCH_DIRS
+from docproof.config import APP_NAME, MODELS, PROJECT_MODELS_DIR, MODEL_SEARCH_DIRS
 from docproof.document.docx_handler import DocxHandler
 from docproof.engine.engine_manager import EngineManager
 from docproof.ui.correction_view import CorrectionView
@@ -65,6 +66,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._engine_manager = engine_manager
         self._docx_handler: DocxHandler | None = None
+        self._worker: ProofreadWorker | None = None
         self._proofread_done = False
         self._current_errors: list = []
 
@@ -137,11 +139,73 @@ class MainWindow(QMainWindow):
 
         toolbar.addSeparator()
 
+        self.edit_btn = QPushButton("✏ 编辑")
+        self.edit_btn.setCheckable(True)
+        self.edit_btn.clicked.connect(self._toggle_edit_mode)
+        self.edit_btn.setEnabled(False)
+        self.edit_btn.setStyleSheet("""
+            QPushButton {
+                background: #F0F0F0;
+                color: #333;
+                border: 1px solid #CCC;
+                padding: 6px 14px;
+                border-radius: 4px;
+                font-size: 13px;
+            }
+            QPushButton:checked {
+                background: #FEF3C7;
+                border-color: #F59E0B;
+                color: #92400E;
+                font-weight: bold;
+            }
+            QPushButton:hover { background: #E0E0E0; }
+            QPushButton:disabled { background: #F5F5F5; color: #CCC; }
+        """)
+        toolbar.addWidget(self.edit_btn)
+
         self.export_btn = QPushButton("💾 导出")
         self.export_btn.clicked.connect(self._export_clean)
         self.export_btn.setEnabled(False)
         self.export_btn.setStyleSheet(self._btn_style("#6B7280"))
         toolbar.addWidget(self.export_btn)
+
+        toolbar.addSeparator()
+
+        # Model selector
+        model_label = QLabel("模型:")
+        model_label.setStyleSheet("font-weight: bold; padding-left: 8px;")
+        toolbar.addWidget(model_label)
+
+        self._model_combo = QComboBox()
+        self._model_combo.setMinimumWidth(220)
+        self._model_combo.setStyleSheet("""
+            QComboBox {
+                padding: 4px 8px;
+                border: 1px solid #CCC;
+                border-radius: 4px;
+                background: white;
+            }
+            QComboBox:hover { border-color: #2563EB; }
+        """)
+        self._model_combo.currentIndexChanged.connect(self._on_model_combo_changed)
+        toolbar.addWidget(self._model_combo)
+
+        # Manage models button
+        manage_btn = QPushButton("⚙ 管理")
+        manage_btn.clicked.connect(self._show_model_manager)
+        manage_btn.setStyleSheet("""
+            QPushButton {
+                background: #F0F0F0;
+                color: #333;
+                border: 1px solid #CCC;
+                padding: 4px 10px;
+                border-radius: 4px;
+            }
+            QPushButton:hover { background: #E0E0E0; }
+        """)
+        toolbar.addWidget(manage_btn)
+
+        self._refresh_model_combo()
 
     def _setup_ui(self):
         central = QWidget()
@@ -181,6 +245,7 @@ class MainWindow(QMainWindow):
         self._error_list.error_selected.connect(self._on_error_selected)
         self._error_list.error_accepted.connect(self._on_error_accepted)
         self._error_list.error_ignored.connect(self._on_error_ignored)
+        self._error_list.accept_all.connect(self._on_accept_all)
 
         layout.addWidget(self._splitter)
 
@@ -206,6 +271,12 @@ class MainWindow(QMainWindow):
 
         self._char_count = QLabel("字数: 0")
         self._statusbar.addPermanentWidget(self._char_count)
+
+    def closeEvent(self, event):
+        """Wait for proofreading worker to finish before closing."""
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.wait(5000)
+        event.accept()
 
     # ---- Actions ----
 
@@ -247,6 +318,11 @@ class MainWindow(QMainWindow):
         if self._docx_handler is None:
             return
 
+        # Stop any previous worker before starting a new one
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.wait(3000)
+        self._worker = None
+
         self.proofread_btn.setEnabled(False)
         self._progress.setVisible(True)
         self._status_text.setText("正在校对...")
@@ -264,6 +340,8 @@ class MainWindow(QMainWindow):
         self._progress.setVisible(False)
         self.proofread_btn.setEnabled(True)
         self.export_btn.setEnabled(True)
+        self.edit_btn.setEnabled(True)
+        self.edit_btn.setChecked(False)
         self._proofread_done = True
         self._current_errors = errors
 
@@ -288,18 +366,58 @@ class MainWindow(QMainWindow):
         self._correction_view.highlight_error(idx)
 
     def _on_error_accepted(self, idx: int):
-        """Accept a correction."""
+        """Accept a correction and refresh the text view."""
+        # Exit edit mode if active
+        if self._correction_view.edit_mode:
+            self._toggle_edit_mode()
+        self._refresh_correction_view()
         self._status_text.setText(
             f"已接受 {len(self._error_list.get_accepted_errors())} 处修改"
         )
 
     def _on_error_ignored(self, idx: int):
-        """Ignore a correction."""
+        """Ignore a correction and refresh the text view."""
+        if self._correction_view.edit_mode:
+            self._toggle_edit_mode()
+        self._refresh_correction_view()
         remaining = len(self._error_list.get_remaining_errors())
         self._status_text.setText(f"剩余 {remaining} 处待处理")
 
+    def _on_accept_all(self):
+        """Accept all remaining errors."""
+        if self._correction_view.edit_mode:
+            self._toggle_edit_mode()
+        self._refresh_correction_view()
+        self._status_text.setText(
+            f"已接受 {len(self._error_list.get_accepted_errors())} 处修改"
+        )
+
+    def _toggle_edit_mode(self):
+        """Toggle between review mode and editable text mode."""
+        enabled = self.edit_btn.isChecked()
+        self._correction_view.set_edit_mode(enabled)
+
+        if enabled:
+            self._status_text.setText("编辑模式 — 可直接修改文本，完成后点击保存")
+            self.edit_btn.setText("✏ 完成编辑")
+        else:
+            self._status_text.setText("已返回校对模式")
+            self.edit_btn.setText("✏ 编辑")
+            self._refresh_correction_view()
+
+    def _refresh_correction_view(self):
+        """Re-render the text view with accepted corrections applied."""
+        if self._docx_handler is None:
+            return
+        base_text = self._docx_handler.get_full_text()
+        self._correction_view.show_partial(
+            base_text,
+            self._current_errors,
+            self._error_list.accepted_indices,
+        )
+
     def _export_clean(self):
-        """Export document with accepted corrections applied directly."""
+        """Export document with all changes applied."""
         if self._docx_handler is None or not self._proofread_done:
             return
 
@@ -311,16 +429,29 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            accepted = self._error_list.get_accepted_errors()
-            if accepted:
-                self._docx_handler.apply_corrections(accepted, markup=False)
-            self._docx_handler.save(filepath)
-            self._status_text.setText(f"已导出: {os.path.basename(filepath)}")
-            QMessageBox.information(
-                self, "导出成功",
-                f"文档已保存到:\n{filepath}\n\n"
-                f"共应用 {len(accepted)} 处修改。"
-            )
+            # If user made manual edits, save the edited full text
+            if self._correction_view.edit_mode:
+                edited_text = self._correction_view.get_edited_text()
+                self._docx_handler.replace_full_text(edited_text)
+                self._docx_handler.save(filepath)
+                self._status_text.setText(f"已导出: {os.path.basename(filepath)}")
+                QMessageBox.information(
+                    self, "导出成功",
+                    f"文档已保存到:\n{filepath}\n\n"
+                    f"已保存所有手动修改。"
+                )
+            else:
+                # Apply accepted corrections only
+                accepted = self._error_list.get_accepted_errors()
+                if accepted:
+                    self._docx_handler.apply_corrections(accepted, markup=False)
+                self._docx_handler.save(filepath)
+                self._status_text.setText(f"已导出: {os.path.basename(filepath)}")
+                QMessageBox.information(
+                    self, "导出成功",
+                    f"文档已保存到:\n{filepath}\n\n"
+                    f"共应用 {len(accepted)} 处修改。"
+                )
         except Exception as e:
             QMessageBox.critical(self, "导出失败", str(e))
 
@@ -382,11 +513,63 @@ class MainWindow(QMainWindow):
         dialog = SettingsDialog(self._engine_manager, self)
         dialog.exec()
         # Update status after settings change
+        self._refresh_model_combo()
         if self._engine_manager.is_loaded:
             from docproof.config import MODELS
             key = self._engine_manager.current_model_key
             name = MODELS[key]['name'] if key else '未知'
             self._status_text.setText(f"已切换模型: {name}")
+
+    def _refresh_model_combo(self):
+        """Refresh the model selector combo box."""
+        self._model_combo.blockSignals(True)
+        self._model_combo.clear()
+
+        from docproof.config import MODELS, is_model_available, get_available_model
+        current_key = self._engine_manager.current_model_key
+
+        for key, info in MODELS.items():
+            label = info['name']
+            if not is_model_available(key):
+                label += " (需下载)"
+            self._model_combo.addItem(label, key)
+
+            # Select current model
+            if key == current_key:
+                self._model_combo.setCurrentIndex(self._model_combo.count() - 1)
+
+        # If no model loaded, select the first available
+        if current_key is None:
+            available = get_available_model()
+            if available:
+                for i in range(self._model_combo.count()):
+                    if self._model_combo.itemData(i) == available:
+                        self._model_combo.setCurrentIndex(i)
+                        break
+
+        self._model_combo.blockSignals(False)
+
+    def _on_model_combo_changed(self, index: int):
+        """Handle model selection change from combo box."""
+        if index < 0:
+            return
+        key = self._model_combo.itemData(index)
+        if key == self._engine_manager.current_model_key:
+            return
+
+        from docproof.config import MODELS
+        info = MODELS[key]
+
+        # Try to load the selected model
+        ok, msg = self._engine_manager.load(key)
+        if ok:
+            self._status_text.setText(f"已切换模型: {info['name']}")
+            self._status_text.setStyleSheet("color: #16A34A; font-weight: bold;")
+        else:
+            self._status_text.setText(f"切换失败: {msg.split(chr(10))[0]}")
+            self._status_text.setStyleSheet("color: #DC2626;")
+            # Revert combo selection
+            self._refresh_model_combo()
 
     # ---- Helpers ----
 

@@ -218,6 +218,37 @@ class DocxHandler:
             raise RuntimeError("Document not loaded.")
         self._doc.save(filepath)
 
+    def replace_full_text(self, new_text: str) -> None:
+        """Replace the entire document content with new text.
+
+        Paragraphs are split by newlines. Each paragraph's content is
+        replaced while preserving the paragraph element and its style.
+        """
+        if not self._doc:
+            raise RuntimeError("Document not loaded.")
+
+        new_paragraphs = new_text.split("\n")
+        existing_paragraphs = self._doc.paragraphs
+
+        for i, para_text in enumerate(new_paragraphs):
+            if i < len(existing_paragraphs):
+                para = existing_paragraphs[i]
+                # Clear existing runs and set new text
+                for run in para.runs:
+                    run.text = ""
+                if para.runs:
+                    para.runs[0].text = para_text
+                else:
+                    para.add_run(para_text)
+            else:
+                # More paragraphs than original — add new ones
+                self._doc.add_paragraph(para_text)
+
+        # Remove extra paragraphs if new text has fewer
+        while len(self._doc.paragraphs) > len(new_paragraphs):
+            last_para = self._doc.paragraphs[-1]
+            last_para._element.getparent().remove(last_para._element)
+
     def export_clean(self, filepath: str) -> None:
         """Export a clean version with all corrections applied (no markup)."""
         for p_idx, p_errors in (self._result.paragraph_errors.items()

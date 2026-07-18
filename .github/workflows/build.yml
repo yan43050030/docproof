@@ -21,7 +21,9 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install PySide6 python-docx kenlm pycorrector pyinstaller
+          pip install PySide6 python-docx kenlm jieba pypinyin loguru
+          pip install torch transformers --index-url https://download.pytorch.org/whl/cpu
+          pip install pyinstaller
 
       - name: Build with PyInstaller
         run: |
@@ -32,6 +34,8 @@ jobs:
             --add-data="third_party/pycorrector/pycorrector;pycorrector" `
             --add-data="models;models" `
             --hidden-import="pycorrector" `
+            --hidden-import="pycorrector.macbert" `
+            --hidden-import="pycorrector.macbert.macbert_corrector" `
             --hidden-import="pycorrector.corrector" `
             --hidden-import="pycorrector.detector" `
             --hidden-import="pycorrector.proper_corrector" `
@@ -39,12 +43,20 @@ jobs:
             --hidden-import="pycorrector.utils.text_utils" `
             --hidden-import="pycorrector.utils.tokenizer" `
             --hidden-import="pycorrector.utils.get_file" `
+            --hidden-import="pycorrector.utils.error_utils" `
+            --hidden-import="pycorrector.utils.tokenizer" `
             --hidden-import="kenlm" `
             --hidden-import="pypinyin" `
             --hidden-import="jieba" `
-            --exclude-module="torch" `
-            --exclude-module="transformers" `
-            --exclude-module="paddle" `
+            --hidden-import="transformers" `
+            --hidden-import="transformers.models.bert" `
+            --hidden-import="transformers.models.bert.modeling_bert" `
+            --hidden-import="transformers.models.bert.tokenization_bert" `
+            --hidden-import="torch" `
+            --hidden-import="torch.nn" `
+            --hidden-import="loguru" `
+            --hidden-import="tqdm" `
+            --collect-all="pycorrector" `
             docproof/__main__.py
 
       - name: Create portable package
@@ -54,15 +66,16 @@ jobs:
           DocProof 便携版使用说明
           ========================
 
-          1. 将语言模型文件(.klm)放入 models 文件夹
-          2. 双击 DocProof.exe 启动
-          3. 首次启动请先放入模型文件
+          支持两种校对引擎:
+            1. Kenlm 统计模型 — 开箱即用，需放入 .klm 文件到 models/
+            2. MacBERT 深度学习 — 首次使用自动下载模型 (~400MB) 到 models/macbert_cache/
 
-          推荐模型下载:
+          Kenlm 模型下载:
             标准模型(141MB): https://github.com/shibing624/pycorrector/releases/download/1.0.0/people2014corpus_chars.klm
             大型模型(2.95GB): https://deepspeech.bj.bcebos.com/zh_lm/zh_giga.no_cna_cmn.prune01244.klm
 
-          放入 models/ 目录后启动即可自动识别。
+          放入 models/ 目录后双击 DocProof.exe 启动。
+          MacBERT 引擎需先安装 PyTorch（已内置），首次切换会自动下载模型。
           "@ | Out-File -FilePath "dist/DocProof-portable/使用说明.txt" -Encoding UTF8
 
       - name: Create ZIP archive

@@ -17,6 +17,7 @@ models/*.klm
 models/*.bin
 models/*.pth
 models/*.pt
+models/macbert_cache/
 !models/.gitkeep
 
 # IDE
