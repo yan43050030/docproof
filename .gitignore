@@ -1,0 +1,34 @@
+# Reference projects (source code for learning, not part of this project)
+references/
+
+# Python
+venv/
+env/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Models (downloaded at runtime)
+*.klm
+*.bin
+*.pth
+*.pt
+models/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.spec
