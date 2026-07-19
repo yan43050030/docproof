@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QAction
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -30,7 +31,10 @@ class ErrorListPanel(QWidget):
         self._errors: list[ErrorItem] = []
         self._ignored: set[int] = set()
         self._accepted: set[int] = set()
+        self._ignored_history: list[int] = []  # stack for undo
         self._setup_ui()
+        self.list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.list_widget.customContextMenuRequested.connect(self._show_context_menu)
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -129,6 +133,7 @@ class ErrorListPanel(QWidget):
         self._errors = errors
         self._ignored = set()
         self._accepted = set()
+        self._ignored_history = []
         self._rebuild_list()
 
     def _rebuild_list(self) -> None:
@@ -182,6 +187,75 @@ class ErrorListPanel(QWidget):
             return
         idx = item.data(Qt.ItemDataRole.UserRole)
         self._ignored.add(idx)
+        self._ignored_history.append(idx)
+        self.error_ignored.emit(idx)
+        self._rebuild_list()
+
+    def _show_context_menu(self, pos):
+        """Right-click context menu for error list items."""
+        item = self.list_widget.itemAt(pos)
+        if item is None:
+            return
+
+        idx = item.data(Qt.ItemDataRole.UserRole)
+
+        menu = QMenu(self)
+        if idx in self._ignored:
+            undo_action = QAction("撤销忽略", self)
+            undo_action.triggered.connect(lambda: self._undo_ignore(idx))
+            menu.addAction(undo_action)
+        else:
+            accept_action = QAction("接受", self)
+            accept_action.triggered.connect(lambda: self._accept_by_index(idx))
+            menu.addAction(accept_action)
+
+            ignore_action = QAction("忽略", self)
+            ignore_action.triggered.connect(lambda: self._ignore_by_index(idx))
+            menu.addAction(ignore_action)
+
+        menu.exec(self.list_widget.viewport().mapToGlobal(pos))
+
+    def _undo_ignore(self, idx: int) -> None:
+        """Restore a previously ignored error."""
+        if idx in self._ignored:
+            self._ignored.discard(idx)
+            if idx in self._ignored_history:
+                self._ignored_history.remove(idx)
+            self._rebuild_list()
+            # Select the restored item
+            for i in range(self.list_widget.count()):
+                item = self.list_widget.item(i)
+                if item is not None and item.data(Qt.ItemDataRole.UserRole) == idx:
+                    self.list_widget.setCurrentRow(i)
+                    self.error_selected.emit(idx)
+                    break
+
+    def undo_last_ignore(self) -> int | None:
+        """Undo the most recent ignore. Returns the restored index or None."""
+        while self._ignored_history:
+            idx = self._ignored_history.pop()
+            if idx in self._ignored:
+                self._ignored.discard(idx)
+                self._rebuild_list()
+                # Select the restored item
+                for i in range(self.list_widget.count()):
+                    item = self.list_widget.item(i)
+                    if item is not None and item.data(Qt.ItemDataRole.UserRole) == idx:
+                        self.list_widget.setCurrentRow(i)
+                        break
+                return idx
+        return None
+
+    def _accept_by_index(self, idx: int) -> None:
+        """Accept a specific error by index (for context menu)."""
+        self._accepted.add(idx)
+        self.error_accepted.emit(idx)
+        self._rebuild_list()
+
+    def _ignore_by_index(self, idx: int) -> None:
+        """Ignore a specific error by index (for context menu)."""
+        self._ignored.add(idx)
+        self._ignored_history.append(idx)
         self.error_ignored.emit(idx)
         self._rebuild_list()
 

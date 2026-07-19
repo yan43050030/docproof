@@ -4,7 +4,10 @@ import sys
 
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from docproof.config import APP_NAME, PROJECT_MODELS_DIR, MODEL_SEARCH_DIRS, get_available_model, DEFAULT_MODEL
+from docproof.config import (
+    APP_NAME, PROJECT_MODELS_DIR, MODEL_SEARCH_DIRS,
+    get_available_model, DEFAULT_MODEL, init_config,
+)
 from docproof.engine.engine_manager import EngineManager
 from docproof.ui.main_window import MainWindow
 from docproof.ui.welcome_wizard import WelcomeWizard
@@ -49,6 +52,9 @@ class DocProofApp:
 
     def run(self) -> int:
         """Run the application. Returns exit code."""
+        # Setup directories, env vars, and import paths
+        init_config()
+
         # Check if a model is available
         available = get_available_model()
         if available is None:

@@ -17,20 +17,29 @@ PROJECT_MODELS_DIR = os.path.join(_PROJECT_ROOT, "models")
 USER_MODELS_DIR = os.path.join(os.path.expanduser("~/.docproof"), "models")
 MODEL_SEARCH_DIRS = [PROJECT_MODELS_DIR, USER_MODELS_DIR]
 
-# MacBERT HuggingFace cache — store model files inside project for portability
+# MacBERT HuggingFace cache path
 _MACBERT_CACHE = os.path.join(PROJECT_MODELS_DIR, "macbert_cache")
-os.makedirs(_MACBERT_CACHE, exist_ok=True)
-if "HF_HOME" not in os.environ:
-    os.environ["HF_HOME"] = _MACBERT_CACHE
-if "TRANSFORMERS_CACHE" not in os.environ:
-    os.environ["TRANSFORMERS_CACHE"] = _MACBERT_CACHE
 
-# Make third_party/pycorrector importable
+# Third-party pycorrector path
 _THIRD_PARTY = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "third_party", "pycorrector")
 )
-if os.path.isdir(_THIRD_PARTY) and _THIRD_PARTY not in sys.path:
-    sys.path.insert(0, _THIRD_PARTY)
+
+
+def init_config() -> None:
+    """Initialize runtime configuration (directories, env vars, paths).
+
+    Must be called once at startup before any engine loading.
+    Safe to call multiple times (idempotent).
+    """
+    os.makedirs(_MACBERT_CACHE, exist_ok=True)
+    if "HF_HOME" not in os.environ:
+        os.environ["HF_HOME"] = _MACBERT_CACHE
+    if "TRANSFORMERS_CACHE" not in os.environ:
+        os.environ["TRANSFORMERS_CACHE"] = _MACBERT_CACHE
+
+    if os.path.isdir(_THIRD_PARTY) and _THIRD_PARTY not in sys.path:
+        sys.path.insert(0, _THIRD_PARTY)
 
 # ---- Model registry ----
 

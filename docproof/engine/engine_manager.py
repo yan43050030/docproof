@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from typing import Callable
 
 from docproof.config import (
     MODELS,
@@ -43,7 +44,9 @@ class EngineManager:
             return False, "未找到任何语言模型，请先下载模型或安装 MacBERT 依赖。"
         return self.load(available)
 
-    def load(self, model_key: str) -> tuple[bool, str]:
+    def load(self, model_key: str,
+             progress_callback: Callable[[str], None] | None = None
+             ) -> tuple[bool, str]:
         """Load a specific model. Returns (success, message)."""
         if model_key not in MODELS:
             return False, f"未知模型: {model_key}"
@@ -71,7 +74,7 @@ class EngineManager:
         if engine_type == ENGINE_TYPES["kenlm"]:
             ok, msg = self._load_kenlm(model_key)
         elif engine_type == ENGINE_TYPES["macbert"]:
-            ok, msg = self._load_macbert(model_key)
+            ok, msg = self._load_macbert(model_key, progress_callback)
         else:
             return False, f"不支持的引擎类型: {engine_type}"
 
@@ -120,7 +123,8 @@ class EngineManager:
         except Exception as e:
             return False, f"加载出错: {e}"
 
-    def _load_macbert(self, model_key: str) -> tuple[bool, str]:
+    def _load_macbert(self, model_key: str,
+                      progress_callback=None) -> tuple[bool, str]:
         try:
             from docproof.engine.macbert_engine import MacBertEngine
         except ImportError as e:
@@ -128,7 +132,7 @@ class EngineManager:
 
         engine = MacBertEngine()
         try:
-            if engine.load():
+            if engine.load(progress_callback=progress_callback):
                 self._engine = engine
                 return True, "ok"
             return False, "MacBERT 模型加载失败"

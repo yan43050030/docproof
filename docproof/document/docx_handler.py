@@ -138,10 +138,32 @@ class DocxHandler:
         self, para, runs: list, start: int, end: int,
         error_word: str, correct_word: str
     ) -> None:
-        """Add revision markup: red strikethrough for error, blue for correction."""
-        # Clear the paragraph and rebuild with markup
-        # Get the full text
+        """Add revision markup: red strikethrough for error, blue for correction.
+        Preserves original run formatting (font, size, etc.)."""
         full_text = para.text
+
+        # Save formatting from the first run before clearing
+        base_font = None
+        if runs:
+            base_font = runs[0].font
+
+        # Capture original formatting attributes
+        font_name = base_font.name if base_font else None
+        font_size = base_font.size if base_font else None
+        font_bold = base_font.bold if base_font else None
+        font_italic = base_font.italic if base_font else None
+        font_color = base_font.color.rgb if base_font and base_font.color.rgb else None
+
+        def _copy_base_font(run):
+            """Apply saved base formatting to a run."""
+            if font_name:
+                run.font.name = font_name
+            if font_size:
+                run.font.size = font_size
+            if font_bold is not None:
+                run.font.bold = font_bold
+            if font_italic is not None:
+                run.font.italic = font_italic
 
         # Split: before_error + [error] + after_error
         before = full_text[:start]
@@ -151,31 +173,32 @@ class DocxHandler:
         for run in runs:
             run.text = ""
 
-        # Rebuild: use first run for all text with formatting
         if not runs:
             return
 
-        # Write: before (normal) + error (red strikethrough) + correct (blue bold)
+        # Write before text with original formatting
         runs[0].text = before
 
-        # Add error word
-        from docx.oxml.ns import qn
+        # Add error word (red strikethrough, keep original font)
         error_run = para.add_run(error_word)
+        _copy_base_font(error_run)
         error_run.font.color.rgb = RGBColor(0xDC, 0x26, 0x26)  # red
         error_run.font.strike = True
 
-        # Add " → "
+        # Add " → " separator
         arrow_run = para.add_run(" → ")
+        _copy_base_font(arrow_run)
         arrow_run.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
-        arrow_run.font.size = error_run.font.size
 
-        # Add correction
+        # Add correction (blue bold, keep original font)
         correct_run = para.add_run(correct_word)
+        _copy_base_font(correct_run)
         correct_run.font.color.rgb = RGBColor(0x25, 0x63, 0xEB)  # blue
         correct_run.font.bold = True
 
-        # Add remaining text
+        # Add remaining text with original formatting
         after_run = para.add_run(after)
+        _copy_base_font(after_run)
 
     def _apply_direct_replace(
         self, runs: list, start: int, end: int, replacement: str
@@ -249,32 +272,3 @@ class DocxHandler:
             last_para = self._doc.paragraphs[-1]
             last_para._element.getparent().remove(last_para._element)
 
-    def export_clean(self, filepath: str) -> None:
-        """Export a clean version with all corrections applied (no markup)."""
-        for p_idx, p_errors in (self._result.paragraph_errors.items()
-                                if self._result else {}):
-            para, runs, para_start, para_end = self._mapper._paragraph_info[p_idx]
-            # Clear the markup added by _apply_markup (extra runs from index 1)
-            original_text = para.text
-            # Re-apply as direct replace
-            pass
-
-        # Simpler approach: reload original and apply without markup
-        original = Document(self.filepath)
-        from docproof.document.position_mapper import PositionMapper
-        temp_mapper = PositionMapper()
-        temp_mapper.build(list(original.paragraphs))
-
-        if self._result:
-            for p_idx, p_errors in self._result.paragraph_errors.items():
-                para = original.paragraphs[p_idx]
-                runs = list(para.runs)
-                _, _, para_start, para_end = temp_mapper._paragraph_info[p_idx]
-                for err in sorted(p_errors, key=lambda e: e.start, reverse=True):
-                    local_start = err.start - para_start
-                    local_end = err.end - para_start
-                    self._apply_direct_replace(
-                        runs, local_start, local_end, err.correct
-                    )
-
-        original.save(filepath)

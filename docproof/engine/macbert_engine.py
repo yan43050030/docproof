@@ -9,6 +9,9 @@ F1 score: 0.83 on SIGHAN-2015 (vs Kenlm's ~0.31).
 
 from __future__ import annotations
 
+import sys
+from typing import Callable
+
 from docproof.engine.base_engine import BaseEngine, ErrorItem
 
 
@@ -20,7 +23,7 @@ class MacBertEngine(BaseEngine):
         self._threshold = threshold
         self._corrector = None
 
-    def load(self) -> bool:
+    def load(self, progress_callback: Callable[[str], None] | None = None) -> bool:
         """Load the MacBERT model from HuggingFace (auto-downloads ~400MB on first run)."""
         if self._loaded:
             return True
@@ -34,8 +37,15 @@ class MacBertEngine(BaseEngine):
                 "或下载完整版便携包。"
             ) from e
 
+        if progress_callback:
+            progress_callback("正在加载 MacBERT 模型（首次使用需下载 ~400MB）...")
+
         self._corrector = MacBertCorrector()
         self._loaded = True
+
+        if progress_callback:
+            progress_callback("MacBERT 模型加载完成")
+
         return True
 
     def unload(self) -> None:

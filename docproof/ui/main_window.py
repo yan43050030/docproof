@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtGui import QAction, QFont, QIcon, QDragEnterEvent, QDropEvent
@@ -27,6 +29,7 @@ from PySide6.QtWidgets import (
 from docproof.config import APP_NAME, MODELS, PROJECT_MODELS_DIR, MODEL_SEARCH_DIRS
 from docproof.document.docx_handler import DocxHandler
 from docproof.engine.engine_manager import EngineManager
+from docproof.engine.user_dict import UserDict
 from docproof.ui.correction_view import CorrectionView
 from docproof.ui.error_list import ErrorListPanel
 from docproof.ui.dialogs.settings import SettingsDialog
@@ -44,6 +47,11 @@ class ProofreadWorker(QThread):
         super().__init__(parent)
         self._engine_manager = engine_manager
         self._text = text
+        self._should_stop = False
+
+    def stop(self):
+        """Request cancellation."""
+        self._should_stop = True
 
     def run(self):
         try:
@@ -54,9 +62,12 @@ class ProofreadWorker(QThread):
 
             self.progress.emit("正在校对...")
             errors = engine.correct(self._text)
+            if self._should_stop:
+                return
             self.finished.emit(errors)
         except Exception as e:
-            self.error.emit(str(e))
+            if not self._should_stop:
+                self.error.emit(str(e))
 
 
 class MainWindow(QMainWindow):
@@ -69,6 +80,10 @@ class MainWindow(QMainWindow):
         self._worker: ProofreadWorker | None = None
         self._proofread_done = False
         self._current_errors: list = []
+        self._user_dict = UserDict()
+        self._recent_files: list[str] = []
+        self._recent_menu = None
+        self._load_recent_files()
 
         self.setWindowTitle(APP_NAME)
         self.setMinimumSize(1000, 700)
@@ -90,6 +105,12 @@ class MainWindow(QMainWindow):
         open_action.setShortcut("Ctrl+O")
         open_action.triggered.connect(self._open_file)
         file_menu.addAction(open_action)
+
+        # Recent files submenu
+        self._recent_menu = file_menu.addMenu("最近打开的文件")
+        self._refresh_recent_menu()
+
+        file_menu.addSeparator()
 
         export_menu = file_menu.addMenu("导出")
         export_clean = QAction("导出校对后文档（直接修改）", self)
@@ -115,6 +136,10 @@ class MainWindow(QMainWindow):
         model_action.triggered.connect(self._show_model_manager)
         help_menu.addAction(model_action)
 
+        dict_action = QAction("编辑用户词典...", self)
+        dict_action.triggered.connect(self._edit_user_dict)
+        help_menu.addAction(dict_action)
+
     def _setup_toolbar(self):
         toolbar = QToolBar("工具栏")
         toolbar.setMovable(False)
@@ -124,22 +149,28 @@ class MainWindow(QMainWindow):
         """)
         self.addToolBar(toolbar)
 
-        open_btn = QPushButton("📂 打开文档")
+        open_btn = QPushButton("打开文档")
         open_btn.clicked.connect(self._open_file)
         open_btn.setStyleSheet(self._btn_style("#2563EB"))
         toolbar.addWidget(open_btn)
 
         toolbar.addSeparator()
 
-        self.proofread_btn = QPushButton("🔍 开始校对")
+        self.proofread_btn = QPushButton("开始校对")
         self.proofread_btn.clicked.connect(self._start_proofread)
         self.proofread_btn.setEnabled(False)
         self.proofread_btn.setStyleSheet(self._btn_style("#16A34A"))
         toolbar.addWidget(self.proofread_btn)
 
+        self.cancel_btn = QPushButton("取消校对")
+        self.cancel_btn.clicked.connect(self._cancel_proofread)
+        self.cancel_btn.setVisible(False)
+        self.cancel_btn.setStyleSheet(self._btn_style("#DC2626"))
+        toolbar.addWidget(self.cancel_btn)
+
         toolbar.addSeparator()
 
-        self.edit_btn = QPushButton("✏ 编辑")
+        self.edit_btn = QPushButton("编辑")
         self.edit_btn.setCheckable(True)
         self.edit_btn.clicked.connect(self._toggle_edit_mode)
         self.edit_btn.setEnabled(False)
@@ -163,7 +194,7 @@ class MainWindow(QMainWindow):
         """)
         toolbar.addWidget(self.edit_btn)
 
-        self.export_btn = QPushButton("💾 导出")
+        self.export_btn = QPushButton("导出")
         self.export_btn.clicked.connect(self._export_clean)
         self.export_btn.setEnabled(False)
         self.export_btn.setStyleSheet(self._btn_style("#6B7280"))
@@ -191,7 +222,7 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self._model_combo)
 
         # Manage models button
-        manage_btn = QPushButton("⚙ 管理")
+        manage_btn = QPushButton("管理")
         manage_btn.clicked.connect(self._show_model_manager)
         manage_btn.setStyleSheet("""
             QPushButton {
@@ -261,7 +292,7 @@ class MainWindow(QMainWindow):
         self._statusbar = QStatusBar()
         self.setStatusBar(self._statusbar)
 
-        self._status_icon = QLabel("🟢")
+        self._status_icon = QLabel("[OK]")
         self._statusbar.addWidget(self._status_icon)
 
         self._status_text = QLabel("就绪")
@@ -313,6 +344,8 @@ class MainWindow(QMainWindow):
         self._status_text.setText(f"已加载: {os.path.basename(filepath)}")
         self._char_count.setText(f"字数: {len(text)}")
 
+        self._add_recent_file(filepath)
+
     def _start_proofread(self):
         """Run the proofreading engine on the loaded document."""
         if self._docx_handler is None:
@@ -324,6 +357,7 @@ class MainWindow(QMainWindow):
         self._worker = None
 
         self.proofread_btn.setEnabled(False)
+        self.cancel_btn.setVisible(True)
         self._progress.setVisible(True)
         self._status_text.setText("正在校对...")
 
@@ -335,28 +369,48 @@ class MainWindow(QMainWindow):
         self._worker.progress.connect(lambda msg: self._status_text.setText(msg))
         self._worker.start()
 
+    def _cancel_proofread(self):
+        """Cancel a running proofreading operation."""
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.stop()
+            self._worker.wait(3000)
+        self._progress.setVisible(False)
+        self.cancel_btn.setVisible(False)
+        self.proofread_btn.setEnabled(True)
+        self._status_text.setText("校对已取消")
+
     def _on_proofread_done(self, errors):
         """Handle proofreading completion."""
         self._progress.setVisible(False)
+        self.cancel_btn.setVisible(False)
         self.proofread_btn.setEnabled(True)
         self.export_btn.setEnabled(True)
         self.edit_btn.setEnabled(True)
         self.edit_btn.setChecked(False)
         self._proofread_done = True
+
+        # Filter through user dictionary
+        filtered_count = len(errors)
+        errors = self._user_dict.filter_errors(errors)
+        filtered_count -= len(errors)
+
         self._current_errors = errors
 
         text = self._docx_handler.get_full_text()
         self._correction_view.show_corrections(text, errors)
         self._error_list.set_errors(errors)
 
+        msg = f"校对完成 — 发现 {len(errors)} 处疑似错误"
+        if filtered_count > 0:
+            msg += f" (用户词典过滤 {filtered_count} 处)"
         self._status_text.setText(
-            f"校对完成 — 发现 {len(errors)} 处疑似错误"
-            if errors else "校对完成 — 未发现错误 ✓"
+            msg if errors else "校对完成 — 未发现错误 ✓"
         )
 
     def _on_proofread_error(self, msg: str):
         """Handle proofreading error."""
         self._progress.setVisible(False)
+        self.cancel_btn.setVisible(False)
         self.proofread_btn.setEnabled(True)
         QMessageBox.warning(self, "校对错误", msg)
         self._status_text.setText("校对失败")
@@ -399,10 +453,10 @@ class MainWindow(QMainWindow):
 
         if enabled:
             self._status_text.setText("编辑模式 — 可直接修改文本，完成后点击保存")
-            self.edit_btn.setText("✏ 完成编辑")
+            self.edit_btn.setText("完成编辑")
         else:
             self._status_text.setText("已返回校对模式")
-            self.edit_btn.setText("✏ 编辑")
+            self.edit_btn.setText("编辑")
             self._refresh_correction_view()
 
     def _refresh_correction_view(self):
@@ -478,6 +532,61 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "导出失败", str(e))
 
     # ---- Drag and Drop ----
+
+    def keyPressEvent(self, event):
+        """Handle keyboard shortcuts."""
+        modifiers = event.modifiers()
+        key = event.key()
+
+        ctrl = modifiers & Qt.KeyboardModifier.ControlModifier
+        shift = modifiers & Qt.KeyboardModifier.ShiftModifier
+
+        if ctrl and key == Qt.Key.Key_Return:
+            # Ctrl+Enter: accept current error
+            if self._proofread_done:
+                self._error_list._accept_current()
+            return
+
+        if ctrl and shift and key == Qt.Key.Key_Return:
+            # Ctrl+Shift+Enter: accept all
+            if self._proofread_done:
+                self._error_list._accept_all()
+            return
+
+        if ctrl and key == Qt.Key.Key_D:
+            # Ctrl+D: ignore current error
+            if self._proofread_done:
+                self._error_list._ignore_current()
+            return
+
+        if ctrl and key == Qt.Key.Key_Z:
+            # Ctrl+Z: undo last ignore
+            if self._proofread_done:
+                idx = self._error_list.undo_last_ignore()
+                if idx is not None:
+                    self._on_error_ignored(idx)
+                    self._refresh_correction_view()
+            return
+
+        if key == Qt.Key.Key_Escape:
+            # Escape: cancel proofread or close
+            if (self._worker is not None and self._worker.isRunning()):
+                self._cancel_proofread()
+            return
+
+        if key == Qt.Key.Key_Down or key == Qt.Key.Key_Up:
+            # Arrow keys: navigate error list
+            if self._proofread_done and self._error_list.isVisible():
+                list_widget = self._error_list.list_widget
+                if list_widget.count() == 0:
+                    return
+                delta = 1 if key == Qt.Key.Key_Down else -1
+                new_row = list_widget.currentRow() + delta
+                if 0 <= new_row < list_widget.count():
+                    list_widget.setCurrentRow(new_row)
+            return
+
+        super().keyPressEvent(event)
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
@@ -560,8 +669,16 @@ class MainWindow(QMainWindow):
         from docproof.config import MODELS
         info = MODELS[key]
 
+        # Show progress feedback during model loading
+        def on_progress(msg: str):
+            self._status_text.setText(msg)
+            QApplication.processEvents()
+
+        self._status_text.setText(f"正在加载: {info['name']}...")
+        QApplication.processEvents()
+
         # Try to load the selected model
-        ok, msg = self._engine_manager.load(key)
+        ok, msg = self._engine_manager.load(key, progress_callback=on_progress)
         if ok:
             self._status_text.setText(f"已切换模型: {info['name']}")
             self._status_text.setStyleSheet("color: #16A34A; font-weight: bold;")
@@ -578,6 +695,84 @@ class MainWindow(QMainWindow):
             self.setWindowTitle(f"{os.path.basename(filepath)} - {APP_NAME}")
         else:
             self.setWindowTitle(APP_NAME)
+
+    def _edit_user_dict(self):
+        """Open the user dictionary file for editing."""
+        dict_path = self._user_dict.dict_path
+        # Ensure file exists
+        if not os.path.exists(dict_path):
+            self._user_dict._save()
+        os.startfile(dict_path) if os.name == "nt" else (
+            __import__("subprocess").call(["open", dict_path])
+        )
+        QMessageBox.information(
+            self, "用户词典",
+            "编辑完成后保存文件，然后重新校对即可应用新词典。\n\n"
+            "词典位置:\n"
+            f"{dict_path}\n\n"
+            f"当前词条数: {self._user_dict.word_count}"
+        )
+
+    # ---- Recent files ----
+
+    def _recent_files_path(self) -> Path:
+        return Path(os.path.expanduser("~/.docproof/recent.json"))
+
+    def _load_recent_files(self):
+        try:
+            path = self._recent_files_path()
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                self._recent_files = [f for f in data.get("files", [])
+                                      if os.path.exists(f)]
+        except (OSError, json.JSONDecodeError):
+            self._recent_files = []
+
+    def _save_recent_files(self):
+        try:
+            path = self._recent_files_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps({"files": self._recent_files}, ensure_ascii=False, indent=2),
+                encoding="utf-8"
+            )
+        except OSError:
+            pass
+
+    def _add_recent_file(self, filepath: str):
+        filepath = os.path.abspath(filepath)
+        if filepath in self._recent_files:
+            self._recent_files.remove(filepath)
+        self._recent_files.insert(0, filepath)
+        self._recent_files = self._recent_files[:5]
+        self._save_recent_files()
+        self._refresh_recent_menu()
+
+    def _refresh_recent_menu(self):
+        if self._recent_menu is None:
+            return
+        self._recent_menu.clear()
+        if not self._recent_files:
+            empty = QAction("(无)", self)
+            empty.setEnabled(False)
+            self._recent_menu.addAction(empty)
+        else:
+            for f in self._recent_files:
+                action = QAction(os.path.basename(f), self)
+                action.setToolTip(f)
+                action.triggered.connect(
+                    lambda checked=False, path=f: self._load_document(path)
+                )
+                self._recent_menu.addAction(action)
+            self._recent_menu.addSeparator()
+            clear_action = QAction("清除最近文件列表", self)
+            clear_action.triggered.connect(self._clear_recent_files)
+            self._recent_menu.addAction(clear_action)
+
+    def _clear_recent_files(self):
+        self._recent_files = []
+        self._save_recent_files()
+        self._refresh_recent_menu()
 
     @staticmethod
     def _btn_style(color: str) -> str:

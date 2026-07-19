@@ -152,8 +152,8 @@ class CorrectionView(QTextEdit):
             self.setPlainText(self._current_text)
             self._apply_error_highlights()
         else:
+            # Caller is responsible for rebuilding markup view
             self.setReadOnly(True)
-            self._restore_markup_view()
 
         self._restore_scroll_proportion(proportion)
 
