@@ -14,6 +14,40 @@ from typing import Callable
 
 from docproof.engine.base_engine import BaseEngine, ErrorItem
 
+# MacBERT is built on BERT, which caps input at 512 tokens. Chinese characters
+# roughly map 1:1 to tokens, so we split long lines into chunks well under the
+# limit at sentence-ending punctuation to avoid silently truncating input.
+_MAX_CHUNK = 200
+_SENTENCE_ENDS = "。！？…；\n"
+
+
+def _split_into_chunks(line: str, max_len: int = _MAX_CHUNK) -> list[tuple[int, str]]:
+    """Split ``line`` into (offset, chunk) pieces no longer than ``max_len``.
+
+    Splits preferentially after sentence-ending punctuation so corrections keep
+    their context; falls back to a hard cut when a single sentence is too long.
+    """
+    if len(line) <= max_len:
+        return [(0, line)]
+
+    chunks: list[tuple[int, str]] = []
+    start = 0
+    n = len(line)
+    while start < n:
+        end = min(start + max_len, n)
+        if end < n:
+            # Try to break at the last sentence end within the window.
+            split = -1
+            for i in range(end - 1, start, -1):
+                if line[i] in _SENTENCE_ENDS:
+                    split = i + 1
+                    break
+            if split > start:
+                end = split
+        chunks.append((start, line[start:end]))
+        start = end
+    return chunks
+
 
 class MacBertEngine(BaseEngine):
     """Proofreading engine using MacBERT4CSC deep learning model."""
@@ -66,19 +100,22 @@ class MacBertEngine(BaseEngine):
         offset = 0
 
         for line in lines:
-            if not line.strip():
-                offset += len(line) + 1  # +1 for the \n
-                continue
-
-            result = self._corrector.correct(line, threshold=self._threshold)
-
-            for error_word, correct_word, position in result.get("errors", []):
-                all_errors.append(ErrorItem(
-                    error=error_word,
-                    correct=correct_word,
-                    start=offset + position,
-                    end=offset + position + len(error_word),
-                ))
+            if line.strip():
+                # Long lines are chunked to stay under BERT's 512-token limit.
+                for chunk_offset, chunk in _split_into_chunks(line):
+                    if not chunk.strip():
+                        continue
+                    result = self._corrector.correct(chunk, threshold=self._threshold)
+                    base = offset + chunk_offset
+                    for error_word, correct_word, position in result.get("errors", []):
+                        all_errors.append(ErrorItem(
+                            error=error_word,
+                            correct=correct_word,
+                            start=base + position,
+                            end=base + position + len(error_word),
+                            category="spelling",
+                            source="macbert",
+                        ))
             offset += len(line) + 1  # +1 for the \n
 
         return all_errors

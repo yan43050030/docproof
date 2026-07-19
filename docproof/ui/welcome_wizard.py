@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import os
-import webbrowser
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QFont
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QFont, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -206,11 +205,11 @@ class WelcomeWizard(QDialog):
     def _open_url(self):
         url = self.url_display.toPlainText()
         if url:
-            webbrowser.open(url)
+            QDesktopServices.openUrl(QUrl(url))
 
     def _open_folder(self, path: str):
         os.makedirs(path, exist_ok=True)
-        webbrowser.open(f"file://{path}")
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
     def _check_models(self):
         """Check if any model files are present and update UI."""

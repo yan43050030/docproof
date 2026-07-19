@@ -12,8 +12,9 @@ from docproof.config import (
     get_model_path,
     _check_dependencies,
 )
-from docproof.engine.base_engine import BaseEngine
+from docproof.engine.base_engine import BaseEngine, ErrorItem
 from docproof.engine.kenlm_engine import KenlmEngine
+from docproof.engine.rule_engine import RuleEngine
 
 
 class EngineManager:
@@ -22,6 +23,71 @@ class EngineManager:
     def __init__(self):
         self._current_key: str | None = None
         self._engine: BaseEngine | None = None
+        self._threshold: float = 0.5
+        self._rule_engine = RuleEngine()
+        self._rule_check_enabled: bool = True
+
+    # ---- configuration ----
+
+    def set_threshold(self, value: float) -> None:
+        self._threshold = value
+        # Apply live to a loaded MacBERT engine if it exposes a threshold.
+        if self._engine is not None and hasattr(self._engine, "_threshold"):
+            self._engine._threshold = value
+
+    def set_rule_check(self, enabled: bool) -> None:
+        self._rule_check_enabled = enabled
+
+    @property
+    def rule_check_enabled(self) -> bool:
+        return self._rule_check_enabled
+
+    def proofread(self, text: str, progress=None, should_stop=None
+                  ) -> list[ErrorItem]:
+        """Run the active engine plus the optional rule pass and merge results.
+
+        Args:
+            text: full document text (paragraphs joined by "\\n").
+            progress: optional callback ``progress(done_lines, total_lines)`` for
+                a real progress bar — text is processed in line batches.
+            should_stop: optional callable returning True to abort early.
+        """
+        if self._engine is None:
+            raise RuntimeError("校对引擎未加载")
+
+        lines = text.split("\n")
+        total = len(lines)
+        errors: list[ErrorItem] = []
+        base = 0
+        batch = 20
+
+        for i in range(0, total, batch):
+            if should_stop is not None and should_stop():
+                return []
+            batch_text = "\n".join(lines[i:i + batch])
+            for e in self._engine.correct(batch_text):
+                e.start += base
+                e.end += base
+                errors.append(e)
+            base += len(batch_text) + 1  # +1 for the joining newline
+            if progress is not None:
+                progress(min(i + batch, total), total)
+
+        if self._rule_check_enabled:
+            errors = self._merge(errors, self._rule_engine.correct(text))
+        errors.sort(key=lambda e: e.start)
+        return errors
+
+    @staticmethod
+    def _merge(primary: list[ErrorItem], extra: list[ErrorItem]) -> list[ErrorItem]:
+        """Append ``extra`` errors that don't overlap any ``primary`` span."""
+        spans = [(e.start, e.end) for e in primary]
+        merged = list(primary)
+        for e in extra:
+            if any(e.start < pe and e.end > ps for ps, pe in spans):
+                continue
+            merged.append(e)
+        return merged
 
     @property
     def engine(self) -> BaseEngine | None:
@@ -130,7 +196,7 @@ class EngineManager:
         except ImportError as e:
             return False, f"导入 MacBERT 引擎失败: {e}"
 
-        engine = MacBertEngine()
+        engine = MacBertEngine(threshold=self._threshold)
         try:
             if engine.load(progress_callback=progress_callback):
                 self._engine = engine

@@ -14,8 +14,12 @@ _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 # 1. Project-local models/ — portable, copy with the app
 # 2. User data dir — traditional per-user location
 PROJECT_MODELS_DIR = os.path.join(_PROJECT_ROOT, "models")
-USER_MODELS_DIR = os.path.join(os.path.expanduser("~/.docproof"), "models")
+USER_DATA_DIR = os.path.expanduser("~/.docproof")
+USER_MODELS_DIR = os.path.join(USER_DATA_DIR, "models")
 MODEL_SEARCH_DIRS = [PROJECT_MODELS_DIR, USER_MODELS_DIR]
+
+# Persisted user settings live in the user data dir.
+SETTINGS_PATH = os.path.join(USER_DATA_DIR, "settings.json")
 
 # MacBERT HuggingFace cache path
 _MACBERT_CACHE = os.path.join(PROJECT_MODELS_DIR, "macbert_cache")
@@ -125,6 +129,21 @@ def get_model_path(model_key: str) -> str | None:
     return os.path.join(MODEL_SEARCH_DIRS[0], filename)
 
 
+def is_macbert_cached() -> bool:
+    """Check whether MacBERT weights are already downloaded locally.
+
+    Used to distinguish "dependencies installed" from "usable fully offline".
+    We look for any model weight file under the HuggingFace cache directory.
+    """
+    if not os.path.isdir(_MACBERT_CACHE):
+        return False
+    for root, _dirs, files in os.walk(_MACBERT_CACHE):
+        for f in files:
+            if f.endswith((".bin", ".safetensors")):
+                return True
+    return False
+
+
 def is_model_available(model_key: str) -> bool:
     """Check if a model is ready to use (file exists OR deps installed for auto-download models)."""
     info = MODELS[model_key]
@@ -132,6 +151,16 @@ def is_model_available(model_key: str) -> bool:
         return is_model_downloaded(model_key)
     # For models without a downloadable file (like macbert),
     # check if required Python packages are installed
+    return _check_dependencies(info.get("requires"))
+
+
+def is_model_ready_offline(model_key: str) -> bool:
+    """Check if a model can run without any network access right now."""
+    info = MODELS[model_key]
+    if info.get("filename"):
+        return is_model_downloaded(model_key)
+    if info.get("engine_type") == "macbert":
+        return _check_dependencies(info.get("requires")) and is_macbert_cached()
     return _check_dependencies(info.get("requires"))
 
 
@@ -146,13 +175,22 @@ def any_model_downloaded() -> bool:
     return any(is_model_available(k) for k in MODELS)
 
 
+def _priority_keys() -> list[str]:
+    return MODEL_PRIORITY + [k for k in MODELS if k not in MODEL_PRIORITY]
+
+
 def get_available_model() -> str | None:
-    """Return the best available model key, or None. Respects MODEL_PRIORITY order."""
-    for key in MODEL_PRIORITY:
-        if is_model_available(key):
+    """Return the best usable model key, or None.
+
+    Prefers models that are ready to run fully offline (weights already present)
+    so a freshly installed, network-less machine picks a downloaded Kenlm model
+    instead of a MacBERT that still needs to fetch ~400MB. Falls back to any
+    model whose dependencies are installed.
+    """
+    for key in _priority_keys():
+        if is_model_ready_offline(key):
             return key
-    # Also check any models not in the priority list
-    for key in MODELS:
-        if key not in MODEL_PRIORITY and is_model_available(key):
+    for key in _priority_keys():
+        if is_model_available(key):
             return key
     return None

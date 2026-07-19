@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from docproof.engine.base_engine import ErrorItem
+from docproof.engine.base_engine import ErrorItem, CATEGORY_LABELS
 
 
 class ErrorListPanel(QWidget):
@@ -146,7 +146,13 @@ class ErrorListPanel(QWidget):
                 continue
             visible_count += 1
 
-            text = f"{err.error} → {err.correct}"
+            correct = err.correct if err.correct != "" else "（删除）"
+            category = getattr(err, "category", "spelling")
+            if category != "spelling":
+                tag = CATEGORY_LABELS.get(category, category)
+                text = f"[{tag}] {err.error} → {correct}"
+            else:
+                text = f"{err.error} → {correct}"
             item = QListWidgetItem(text)
             item.setData(Qt.ItemDataRole.UserRole, i)
 

@@ -7,6 +7,7 @@ import os
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QGroupBox,
@@ -15,6 +16,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QSlider,
     QVBoxLayout,
 )
 
@@ -32,11 +34,12 @@ from docproof.ui.welcome_wizard import WelcomeWizard
 class SettingsDialog(QDialog):
     """Settings dialog with model management."""
 
-    def __init__(self, engine_manager: EngineManager, parent=None):
+    def __init__(self, engine_manager: EngineManager, parent=None, settings=None):
         super().__init__(parent)
         self._engine_manager = engine_manager
+        self._settings = settings
         self.setWindowTitle("设置")
-        self.setMinimumSize(560, 420)
+        self.setMinimumSize(560, 520)
         self.setModal(True)
         self._setup_ui()
 
@@ -92,6 +95,35 @@ class SettingsDialog(QDialog):
         model_layout.addLayout(btn_layout)
         layout.addWidget(model_group)
 
+        # ---- Proofreading options ----
+        opt_group = QGroupBox("校对选项")
+        opt_layout = QVBoxLayout(opt_group)
+
+        thr_row = QHBoxLayout()
+        thr_row.addWidget(QLabel("MacBERT 灵敏度:"))
+        self.threshold_slider = QSlider(Qt.Orientation.Horizontal)
+        self.threshold_slider.setMinimum(10)   # 0.10
+        self.threshold_slider.setMaximum(90)   # 0.90
+        cur_thr = int(round((self._settings.threshold if self._settings else 0.5) * 100))
+        self.threshold_slider.setValue(max(10, min(90, cur_thr)))
+        self.threshold_value = QLabel(f"{self.threshold_slider.value()/100:.2f}")
+        self.threshold_slider.valueChanged.connect(self._on_threshold_changed)
+        thr_row.addWidget(self.threshold_slider)
+        thr_row.addWidget(self.threshold_value)
+        opt_layout.addLayout(thr_row)
+        hint = QLabel("数值越低越敏感（发现更多，可能误报）；越高越保守。")
+        hint.setStyleSheet("color:#888; font-size:12px;")
+        opt_layout.addWidget(hint)
+
+        self.rule_check = QCheckBox("启用标点/规范检查（半角标点、多余空格、重复标点）")
+        enabled = self._settings.rule_check_enabled if self._settings \
+            else self._engine_manager.rule_check_enabled
+        self.rule_check.setChecked(enabled)
+        self.rule_check.toggled.connect(self._on_rule_toggled)
+        opt_layout.addWidget(self.rule_check)
+
+        layout.addWidget(opt_group)
+
         # ---- Model directories ----
         dir_group = QGroupBox("模型搜索目录")
         dir_layout = QVBoxLayout(dir_group)
@@ -105,6 +137,18 @@ class SettingsDialog(QDialog):
         button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
         button_box.accepted.connect(self.accept)
         layout.addWidget(button_box)
+
+    def _on_threshold_changed(self, value: int):
+        thr = value / 100.0
+        self.threshold_value.setText(f"{thr:.2f}")
+        self._engine_manager.set_threshold(thr)
+        if self._settings:
+            self._settings.set("macbert_threshold", thr)
+
+    def _on_rule_toggled(self, checked: bool):
+        self._engine_manager.set_rule_check(checked)
+        if self._settings:
+            self._settings.set("rule_check_enabled", checked)
 
     def _refresh_model_list(self):
         """Refresh the model list showing status of each model."""

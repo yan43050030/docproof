@@ -13,6 +13,8 @@ from docproof.config import (
     get_model_path,
     is_model_available,
     is_model_downloaded,
+    is_model_ready_offline,
+    is_macbert_cached,
     any_model_downloaded,
     get_available_model,
     _check_dependencies,
@@ -97,3 +99,25 @@ class TestGetModelPath:
     def test_returns_none_for_macbert(self):
         path = get_model_path("macbert")
         assert path is None
+
+
+class TestOfflineReadiness:
+    """Tests for offline-aware availability."""
+
+    def test_is_macbert_cached_returns_bool(self):
+        assert isinstance(is_macbert_cached(), bool)
+
+    def test_is_model_ready_offline_returns_bool(self):
+        for key in MODELS:
+            assert isinstance(is_model_ready_offline(key), bool)
+
+    def test_macbert_offline_requires_cache(self):
+        # MacBERT is only offline-ready when its weights are cached, even if
+        # torch/transformers happen to be installed.
+        ready = is_model_ready_offline("macbert")
+        if ready:
+            assert is_macbert_cached()
+
+    def test_kenlm_offline_equals_downloaded(self):
+        for key in ["kenlm-tiny", "kenlm-base", "kenlm-large"]:
+            assert is_model_ready_offline(key) == is_model_downloaded(key)

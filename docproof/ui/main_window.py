@@ -6,8 +6,10 @@ import json
 import os
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal, QTimer
-from PySide6.QtGui import QAction, QFont, QIcon, QDragEnterEvent, QDropEvent
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl
+from PySide6.QtGui import (
+    QAction, QFont, QIcon, QDragEnterEvent, QDropEvent, QDesktopServices,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -18,6 +20,7 @@ from PySide6.QtWidgets import (
     QMenuBar,
     QMessageBox,
     QProgressBar,
+    QProgressDialog,
     QPushButton,
     QSplitter,
     QStatusBar,
@@ -27,13 +30,30 @@ from PySide6.QtWidgets import (
 )
 
 from docproof.config import APP_NAME, MODELS, PROJECT_MODELS_DIR, MODEL_SEARCH_DIRS
+from docproof.version import __version__
 from docproof.document.docx_handler import DocxHandler
+from docproof.document.text_handler import TextHandler
 from docproof.engine.engine_manager import EngineManager
 from docproof.engine.user_dict import UserDict
+from docproof.settings_store import SettingsStore
+from docproof import report
 from docproof.ui.correction_view import CorrectionView
 from docproof.ui.error_list import ErrorListPanel
 from docproof.ui.dialogs.settings import SettingsDialog
 from docproof.ui.welcome_wizard import WelcomeWizard
+
+# File dialog filters and the extensions we can open.
+_DOCX_EXTS = (".docx",)
+_TEXT_EXTS = (".txt", ".md")
+_OPENABLE_EXTS = _DOCX_EXTS + _TEXT_EXTS
+_LEGACY_EXTS = (".doc", ".wps", ".wpt")  # binary formats we can't parse
+
+
+def _make_handler(filepath: str):
+    """Return a handler appropriate for the file's extension."""
+    if filepath.lower().endswith(_TEXT_EXTS):
+        return TextHandler(filepath)
+    return DocxHandler(filepath)
 
 
 class ProofreadWorker(QThread):
@@ -42,6 +62,7 @@ class ProofreadWorker(QThread):
     finished = Signal(list)  # list of ErrorItem
     error = Signal(str)  # error message
     progress = Signal(str)  # progress message
+    progress_pct = Signal(int, int)  # (done, total) for a determinate bar
 
     def __init__(self, engine_manager: EngineManager, text: str, parent=None):
         super().__init__(parent)
@@ -55,13 +76,16 @@ class ProofreadWorker(QThread):
 
     def run(self):
         try:
-            engine = self._engine_manager.engine
-            if engine is None:
+            if self._engine_manager.engine is None:
                 self.error.emit("校对引擎未加载")
                 return
 
             self.progress.emit("正在校对...")
-            errors = engine.correct(self._text)
+            errors = self._engine_manager.proofread(
+                self._text,
+                progress=lambda d, t: self.progress_pct.emit(d, t),
+                should_stop=lambda: self._should_stop,
+            )
             if self._should_stop:
                 return
             self.finished.emit(errors)
@@ -85,6 +109,11 @@ class MainWindow(QMainWindow):
         self._recent_menu = None
         self._load_recent_files()
 
+        # Persisted settings; apply to the engine before first use.
+        self._settings = SettingsStore()
+        self._engine_manager.set_threshold(self._settings.threshold)
+        self._engine_manager.set_rule_check(self._settings.rule_check_enabled)
+
         self.setWindowTitle(APP_NAME)
         self.setMinimumSize(1000, 700)
         self.setAcceptDrops(True)
@@ -94,6 +123,7 @@ class MainWindow(QMainWindow):
         self._setup_ui()
         self._setup_statusbar()
         self._update_title()
+        self._restore_geometry()
 
     # ---- UI Setup ----
 
@@ -117,15 +147,37 @@ class MainWindow(QMainWindow):
         export_clean.triggered.connect(self._export_clean)
         export_menu.addAction(export_clean)
 
-        export_marked = QAction("导出修订标记文档", self)
+        export_tracked = QAction("导出 Word 修订版（可接受/拒绝）", self)
+        export_tracked.triggered.connect(self._export_tracked)
+        export_menu.addAction(export_tracked)
+
+        export_marked = QAction("导出彩色标记文档", self)
         export_marked.triggered.connect(self._export_marked)
         export_menu.addAction(export_marked)
+
+        export_report = QAction("导出校对报告 (HTML/TXT)...", self)
+        export_report.triggered.connect(self._export_report)
+        export_menu.addAction(export_report)
+
+        file_menu.addSeparator()
+        batch_action = QAction("批量校对文件夹...", self)
+        batch_action.triggered.connect(self._batch_proofread)
+        file_menu.addAction(batch_action)
 
         file_menu.addSeparator()
         quit_action = QAction("退出(&Q)", self)
         quit_action.setShortcut("Ctrl+Q")
         quit_action.triggered.connect(self.close)
         file_menu.addAction(quit_action)
+
+        # Tools menu
+        tools_menu = menu_bar.addMenu("工具(&T)")
+        settings_action = QAction("设置...", self)
+        settings_action.triggered.connect(self._show_model_manager)
+        tools_menu.addAction(settings_action)
+        dict_action = QAction("编辑用户词典...", self)
+        dict_action.triggered.connect(self._edit_user_dict)
+        tools_menu.addAction(dict_action)
 
         help_menu = menu_bar.addMenu("帮助(&H)")
         about_action = QAction("关于 DocProof", self)
@@ -135,10 +187,6 @@ class MainWindow(QMainWindow):
         model_action = QAction("管理语言模型...", self)
         model_action.triggered.connect(self._show_model_manager)
         help_menu.addAction(model_action)
-
-        dict_action = QAction("编辑用户词典...", self)
-        dict_action.triggered.connect(self._edit_user_dict)
-        help_menu.addAction(dict_action)
 
     def _setup_toolbar(self):
         toolbar = QToolBar("工具栏")
@@ -304,25 +352,57 @@ class MainWindow(QMainWindow):
         self._statusbar.addPermanentWidget(self._char_count)
 
     def closeEvent(self, event):
-        """Wait for proofreading worker to finish before closing."""
+        """Persist geometry and wait for the worker to finish before closing."""
+        try:
+            geo = bytes(self.saveGeometry().toHex().data()).decode("ascii")
+            self._settings.set("window_geometry", geo)
+        except Exception:
+            pass
         if self._worker is not None and self._worker.isRunning():
+            self._worker.stop()
             self._worker.wait(5000)
         event.accept()
+
+    def _restore_geometry(self):
+        """Restore the last window geometry if one was saved."""
+        geo = self._settings.get("window_geometry")
+        if not geo:
+            return
+        try:
+            from PySide6.QtCore import QByteArray
+            self.restoreGeometry(QByteArray.fromHex(bytes(geo, "ascii")))
+        except Exception:
+            pass
 
     # ---- Actions ----
 
     def _open_file(self):
         filepath, _ = QFileDialog.getOpenFileName(
             self, "打开文档", "",
-            "Word 文档 (*.docx);;所有文件 (*)"
+            "可校对文档 (*.docx *.txt *.md);;Word 文档 (*.docx);;"
+            "文本文件 (*.txt *.md);;所有文件 (*)"
         )
         if filepath:
             self._load_document(filepath)
 
     def _load_document(self, filepath: str):
-        """Load a .docx file and display its content."""
+        """Load a .docx / .txt / .md file and display its content."""
+        lower = filepath.lower()
+        if lower.endswith(_LEGACY_EXTS):
+            QMessageBox.information(
+                self, "暂不支持该格式",
+                "DocProof 无法直接读取 .doc / .wps 等旧二进制格式。\n\n"
+                "请在 Word 或 WPS 中用「另存为」转换为 .docx 后再打开。"
+            )
+            return
+        if not lower.endswith(_OPENABLE_EXTS):
+            QMessageBox.warning(
+                self, "不支持的文件",
+                "仅支持 .docx、.txt、.md 文件。"
+            )
+            return
         try:
-            self._docx_handler = DocxHandler(filepath)
+            self._docx_handler = _make_handler(filepath)
             self._docx_handler.load()
         except Exception as e:
             QMessageBox.critical(self, "错误", f"无法打开文档:\n{e}")
@@ -363,11 +443,20 @@ class MainWindow(QMainWindow):
 
         text = self._docx_handler.get_full_text()
 
+        self._progress.setMaximum(0)  # start indeterminate until first tick
         self._worker = ProofreadWorker(self._engine_manager, text)
         self._worker.finished.connect(self._on_proofread_done)
         self._worker.error.connect(self._on_proofread_error)
         self._worker.progress.connect(lambda msg: self._status_text.setText(msg))
+        self._worker.progress_pct.connect(self._on_proofread_progress)
         self._worker.start()
+
+    def _on_proofread_progress(self, done: int, total: int):
+        """Update the progress bar with a real percentage."""
+        if total > 0:
+            self._progress.setMaximum(total)
+            self._progress.setValue(done)
+            self._status_text.setText(f"正在校对... {done}/{total} 段")
 
     def _cancel_proofread(self):
         """Cancel a running proofreading operation."""
@@ -470,66 +559,185 @@ class MainWindow(QMainWindow):
             self._error_list.accepted_indices,
         )
 
+    def _is_text_doc(self) -> bool:
+        return isinstance(self._docx_handler, TextHandler)
+
+    def _fresh_handler(self):
+        """Load a clean copy from disk so exports never stack mutations."""
+        handler = _make_handler(self._docx_handler.filepath)
+        handler.load()
+        return handler
+
+    def _save_filter(self) -> str:
+        return "文本文件 (*.txt)" if self._is_text_doc() else "Word 文档 (*.docx)"
+
     def _export_clean(self):
-        """Export document with all changes applied."""
+        """Export document with accepted (or hand-edited) changes applied."""
         if self._docx_handler is None or not self._proofread_done:
             return
 
         filepath, _ = QFileDialog.getSaveFileName(
-            self, "导出校对后文档", "",
-            "Word 文档 (*.docx)"
+            self, "导出校对后文档", "", self._save_filter()
         )
         if not filepath:
             return
 
         try:
-            # If user made manual edits, save the edited full text
             if self._correction_view.edit_mode:
                 edited_text = self._correction_view.get_edited_text()
-                self._docx_handler.replace_full_text(edited_text)
-                self._docx_handler.save(filepath)
-                self._status_text.setText(f"已导出: {os.path.basename(filepath)}")
-                QMessageBox.information(
-                    self, "导出成功",
-                    f"文档已保存到:\n{filepath}\n\n"
-                    f"已保存所有手动修改。"
-                )
+                handler = self._fresh_handler()
+                handler.replace_full_text(edited_text)
+                handler.save(filepath)
+                note = "已保存所有手动修改。"
             else:
-                # Apply accepted corrections only
                 accepted = self._error_list.get_accepted_errors()
+                handler = self._fresh_handler()
                 if accepted:
-                    self._docx_handler.apply_corrections(accepted, markup=False)
-                self._docx_handler.save(filepath)
-                self._status_text.setText(f"已导出: {os.path.basename(filepath)}")
-                QMessageBox.information(
-                    self, "导出成功",
-                    f"文档已保存到:\n{filepath}\n\n"
-                    f"共应用 {len(accepted)} 处修改。"
-                )
+                    handler.apply_corrections(accepted, markup=False)
+                handler.save(filepath)
+                note = f"共应用 {len(accepted)} 处修改。"
+            self._status_text.setText(f"已导出: {os.path.basename(filepath)}")
+            QMessageBox.information(
+                self, "导出成功", f"文档已保存到:\n{filepath}\n\n{note}"
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", str(e))
+
+    def _export_tracked(self):
+        """Export document with genuine Word tracked changes (accept/reject)."""
+        if self._docx_handler is None or not self._proofread_done:
+            return
+        if self._is_text_doc():
+            QMessageBox.information(
+                self, "不适用", "纯文本文件没有修订格式，请使用「导出校对后文档」。"
+            )
+            return
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, "导出 Word 修订版", "", "Word 文档 (*.docx)"
+        )
+        if not filepath:
+            return
+        errors = self._export_errors()
+        try:
+            handler = self._fresh_handler()
+            handler.apply_corrections(errors, track_changes=True)
+            handler.save(filepath)
+            self._status_text.setText(f"已导出修订版: {os.path.basename(filepath)}")
+            QMessageBox.information(
+                self, "导出成功",
+                f"已保存 Word 修订版:\n{filepath}\n\n"
+                f"共 {len(errors)} 处修订，可在 Word/WPS 中逐条接受或拒绝。"
+            )
         except Exception as e:
             QMessageBox.critical(self, "导出失败", str(e))
 
     def _export_marked(self):
-        """Export document with revision markup visible."""
+        """Export document with visible colored markup (not real revisions)."""
         if self._docx_handler is None or not self._proofread_done:
             return
-
+        if self._is_text_doc():
+            QMessageBox.information(
+                self, "不适用", "纯文本文件不支持彩色标记，请使用「导出校对后文档」。"
+            )
+            return
         filepath, _ = QFileDialog.getSaveFileName(
-            self, "导出修订标记文档", "",
-            "Word 文档 (*.docx)"
+            self, "导出彩色标记文档", "", "Word 文档 (*.docx)"
         )
         if not filepath:
             return
-
+        errors = self._export_errors()
         try:
-            # Apply all errors with markup
-            self._docx_handler.apply_corrections(
-                self._current_errors, markup=True
-            )
-            self._docx_handler.save(filepath)
-            self._status_text.setText(f"已导出修订版: {os.path.basename(filepath)}")
+            handler = self._fresh_handler()
+            handler.apply_corrections(errors, markup=True)
+            handler.save(filepath)
+            self._status_text.setText(f"已导出标记版: {os.path.basename(filepath)}")
         except Exception as e:
             QMessageBox.critical(self, "导出失败", str(e))
+
+    def _export_errors(self) -> list:
+        """Errors to write when exporting markup/revisions: accepted if any were
+        explicitly accepted, otherwise all remaining (un-ignored) findings."""
+        accepted = self._error_list.get_accepted_errors()
+        if accepted:
+            return accepted
+        return self._error_list.get_remaining_errors()
+
+    def _export_report(self):
+        """Export a proofreading report (HTML or TXT)."""
+        if self._docx_handler is None or not self._proofread_done:
+            QMessageBox.information(self, "提示", "请先打开文档并完成校对。")
+            return
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, "导出校对报告", "docproof-report.html",
+            "HTML 报告 (*.html);;文本报告 (*.txt)"
+        )
+        if not filepath:
+            return
+        try:
+            report.save_report(
+                filepath, os.path.basename(self._docx_handler.filepath),
+                self._current_errors,
+            )
+            self._status_text.setText(f"已导出报告: {os.path.basename(filepath)}")
+            QMessageBox.information(self, "导出成功", f"报告已保存到:\n{filepath}")
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", str(e))
+
+    def _batch_proofread(self):
+        """Proofread every supported file in a folder and export corrected copies."""
+        if not self._engine_manager.is_loaded:
+            QMessageBox.warning(self, "无引擎", "请先加载一个校对模型。")
+            return
+        src_dir = QFileDialog.getExistingDirectory(self, "选择待校对文件夹")
+        if not src_dir:
+            return
+        files = [
+            os.path.join(src_dir, f) for f in sorted(os.listdir(src_dir))
+            if f.lower().endswith(_OPENABLE_EXTS)
+            and not f.startswith("~$")
+        ]
+        if not files:
+            QMessageBox.information(self, "无文件", "该文件夹内没有 .docx/.txt/.md 文件。")
+            return
+        out_dir = QFileDialog.getExistingDirectory(self, "选择输出文件夹（保存修订版）")
+        if not out_dir:
+            return
+
+        dlg = QProgressDialog("正在批量校对...", "取消", 0, len(files), self)
+        dlg.setWindowModality(Qt.WindowModality.WindowModal)
+        done = 0
+        total_errors = 0
+        for i, path in enumerate(files):
+            dlg.setValue(i)
+            dlg.setLabelText(f"正在校对: {os.path.basename(path)}")
+            QApplication.processEvents()
+            if dlg.wasCanceled():
+                break
+            try:
+                handler = _make_handler(path)
+                handler.load()
+                errors = self._engine_manager.proofread(handler.get_full_text())
+                errors = self._user_dict.filter_errors(errors)
+                total_errors += len(errors)
+                if errors:
+                    if isinstance(handler, TextHandler):
+                        handler.apply_corrections(errors, markup=False)
+                    else:
+                        handler.apply_corrections(errors, track_changes=True)
+                base, ext = os.path.splitext(os.path.basename(path))
+                handler.save(os.path.join(out_dir, f"{base}-校对{ext}"))
+                done += 1
+            except Exception:
+                continue
+        dlg.setValue(len(files))
+        self._status_text.setText(
+            f"批量校对完成 — {done}/{len(files)} 个文件，共 {total_errors} 处修订"
+        )
+        QMessageBox.information(
+            self, "批量校对完成",
+            f"已处理 {done}/{len(files)} 个文件，共 {total_errors} 处修订。\n\n"
+            f"修订版保存在:\n{out_dir}"
+        )
 
     # ---- Drag and Drop ----
 
@@ -591,7 +799,7 @@ class MainWindow(QMainWindow):
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
-                if url.toLocalFile().endswith(".docx"):
+                if url.toLocalFile().lower().endswith(_OPENABLE_EXTS):
                     event.acceptProposedAction()
                     return
         event.ignore()
@@ -599,7 +807,7 @@ class MainWindow(QMainWindow):
     def dropEvent(self, event: QDropEvent):
         for url in event.mimeData().urls():
             filepath = url.toLocalFile()
-            if filepath.endswith(".docx"):
+            if filepath.lower().endswith(_OPENABLE_EXTS):
                 self._load_document(filepath)
                 return
 
@@ -609,9 +817,10 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self, "关于 DocProof",
             "<h3>DocProof</h3>"
-            "<p>中文文档离线校对工具 v0.1.0</p>"
-            "<p>基于 pycorrector 校对引擎</p>"
-            "<p>校对引擎: Kenlm 统计语言模型 (Apache 2.0)</p>"
+            f"<p>中文文档离线校对工具 v{__version__}</p>"
+            "<p>校对引擎: pycorrector (Kenlm 统计模型 / MacBERT 深度模型, Apache 2.0)"
+            " + 内置标点规范规则</p>"
+            "<p>支持格式: .docx（含表格、页眉页脚）/ .txt / .md</p>"
             "<p>模型搜索目录（按优先级）:</p>"
             f"<p>1. <code>{PROJECT_MODELS_DIR}</code></p>"
             f"<p>2. <code>{MODEL_SEARCH_DIRS[1]}</code></p>"
@@ -619,8 +828,11 @@ class MainWindow(QMainWindow):
 
     def _show_model_manager(self):
         """Show the settings dialog for model management."""
-        dialog = SettingsDialog(self._engine_manager, self)
+        dialog = SettingsDialog(self._engine_manager, self, settings=self._settings)
         dialog.exec()
+        # Persist the model that ended up active.
+        if self._engine_manager.current_model_key:
+            self._settings.set("last_model", self._engine_manager.current_model_key)
         # Update status after settings change
         self._refresh_model_combo()
         if self._engine_manager.is_loaded:
@@ -702,9 +914,8 @@ class MainWindow(QMainWindow):
         # Ensure file exists
         if not os.path.exists(dict_path):
             self._user_dict._save()
-        os.startfile(dict_path) if os.name == "nt" else (
-            __import__("subprocess").call(["open", dict_path])
-        )
+        # Cross-platform open (Windows / macOS / Linux) via Qt.
+        QDesktopServices.openUrl(QUrl.fromLocalFile(dict_path))
         QMessageBox.information(
             self, "用户词典",
             "编辑完成后保存文件，然后重新校对即可应用新词典。\n\n"

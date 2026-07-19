@@ -1,21 +1,26 @@
 """Read, proofread, and write Word (.docx) documents with format preservation.
 
-Uses python-docx for document manipulation and PositionMapper for locating
-corrections at the run level.
+Text is collected in reading order from the document body (including nested
+tables) as well as every section's headers and footers, so proofreading covers
+the places real documents actually hide typos. Corrections are applied at the
+run level via :mod:`docproof.document.run_ops`, which preserves character
+formatting and can emit genuine Word tracked changes.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Iterator
 
 if TYPE_CHECKING:
     from docx.document import Document as DocumentType
 
 from docx import Document
-from docx.shared import RGBColor
+from docx.table import Table
+from docx.text.paragraph import Paragraph
 
 from docproof.document.position_mapper import PositionMapper
+from docproof.document import run_ops
 
 
 @dataclass
@@ -29,6 +34,32 @@ class CorrectionResult:
     # paragraph_index -> list of ErrorItem
 
 
+def _iter_block_paragraphs(container) -> Iterator[Paragraph]:
+    """Yield every paragraph in a block container in reading order.
+
+    Recurses through tables (and nested tables) so table-cell text is included.
+    Falls back to ``.paragraphs`` + ``.tables`` for containers (headers/footers)
+    that don't implement ``iter_inner_content``.
+    """
+    if hasattr(container, "iter_inner_content"):
+        for item in container.iter_inner_content():
+            if isinstance(item, Paragraph):
+                yield item
+            elif isinstance(item, Table):
+                yield from _iter_table_paragraphs(item)
+        return
+    for para in getattr(container, "paragraphs", []):
+        yield para
+    for table in getattr(container, "tables", []):
+        yield from _iter_table_paragraphs(table)
+
+
+def _iter_table_paragraphs(table: Table) -> Iterator[Paragraph]:
+    for row in table.rows:
+        for cell in row.cells:
+            yield from _iter_block_paragraphs(cell)
+
+
 class DocxHandler:
     """Handles .docx document reading, correction application, and writing."""
 
@@ -36,7 +67,10 @@ class DocxHandler:
         self.filepath = filepath
         self._doc: DocumentType | None = None
         self._mapper = PositionMapper()
+        self._paragraphs: list[Paragraph] = []
         self._result: CorrectionResult | None = None
+
+    # ---- properties ----
 
     @property
     def document(self):
@@ -44,9 +78,7 @@ class DocxHandler:
 
     @property
     def paragraphs(self) -> list:
-        if self._doc:
-            return list(self._doc.paragraphs)
-        return []
+        return list(self._paragraphs)
 
     @property
     def mapper(self) -> PositionMapper:
@@ -56,184 +88,97 @@ class DocxHandler:
     def result(self) -> CorrectionResult | None:
         return self._result
 
+    # ---- loading ----
+
     def load(self) -> None:
-        """Open and parse the document."""
+        """Open and parse the document, collecting all proofread-able text."""
         self._doc = Document(self.filepath)
-        self._mapper.build(list(self._doc.paragraphs))
+        self._paragraphs = self._collect_paragraphs()
+        self._mapper.build(self._paragraphs)
+
+    def _collect_paragraphs(self) -> list[Paragraph]:
+        """Body (with tables) first, then each section's headers and footers."""
+        paras: list[Paragraph] = []
+        paras.extend(_iter_block_paragraphs(self._doc))
+        for section in self._doc.sections:
+            for hf in (
+                section.header, section.first_page_header, section.even_page_header,
+                section.footer, section.first_page_footer, section.even_page_footer,
+            ):
+                if hf is None or getattr(hf, "is_linked_to_previous", False):
+                    continue
+                paras.extend(_iter_block_paragraphs(hf))
+        return paras
 
     def get_full_text(self) -> str:
-        """Get the full text content of the document."""
+        """Full proofread text: paragraph run-texts joined by newlines."""
         if not self._doc:
             raise RuntimeError("Document not loaded. Call load() first.")
-        # Use paragraph texts joined by newlines for engine processing
-        return "\n".join(self._mapper._paragraph_texts)
+        return "\n".join(self._mapper.paragraph_texts)
 
-    def apply_corrections(
-        self, errors: list, markup: bool = True
-    ) -> CorrectionResult:
+    # ---- correction application ----
+
+    def _group_errors(self, errors: list) -> dict[int, list]:
+        """Group errors by paragraph index, sorted descending within a paragraph.
+
+        Descending order keeps earlier offsets valid while later spans are edited
+        (run splitting/replacement only affects text at or after the edit point).
         """
-        Apply corrections to the document.
-
-        Args:
-            errors: List of ErrorItem objects from the proofreading engine.
-            markup: If True, add revision markup (red strikethrough + blue correction).
-                    If False, directly replace error text with correction.
-
-        Returns:
-            CorrectionResult with details.
-        """
-        if not self._doc:
-            raise RuntimeError("Document not loaded. Call load() first.")
-
-        # Group errors by paragraph
-        paragraph_errors: dict[int, list] = {}
+        grouped: dict[int, list] = {}
         for err in errors:
             span = self._mapper.char_to_span(err.start)
             if span is None:
                 continue
-            p_idx = span.paragraph_index
-            if p_idx not in paragraph_errors:
-                paragraph_errors[p_idx] = []
-            paragraph_errors[p_idx].append(err)
+            grouped.setdefault(span.paragraph_index, []).append(err)
+        for p_idx in grouped:
+            grouped[p_idx].sort(key=lambda e: e.start, reverse=True)
+        return grouped
 
-        # Sort errors within each paragraph by position (descending to avoid offset issues)
-        for p_idx in paragraph_errors:
-            paragraph_errors[p_idx].sort(key=lambda e: e.start, reverse=True)
+    def apply_corrections(
+        self, errors: list, markup: bool = True, track_changes: bool = False
+    ) -> CorrectionResult:
+        """Apply corrections to the document.
 
-        # Track results
-        all_original = self.get_full_text()
-        result = CorrectionResult(
-            original_text=all_original,
-            corrected_text=all_original,
-            errors=errors,
-            paragraph_errors=paragraph_errors,
-        )
+        Args:
+            errors: ErrorItem objects from the proofreading engine.
+            markup: If True (and not track_changes), add visible colored markup.
+                    If False, replace the error text cleanly.
+            track_changes: If True, emit genuine Word tracked changes that can be
+                    accepted/rejected in Word or WPS. Takes precedence over markup.
+        """
+        if not self._doc:
+            raise RuntimeError("Document not loaded. Call load() first.")
 
-        # Apply corrections to each paragraph
-        for p_idx, p_errors in paragraph_errors.items():
-            para, runs, para_start, para_end = self._mapper._paragraph_info[p_idx]
+        original = self.get_full_text()
+        grouped = self._group_errors(errors)
+
+        for p_idx, p_errors in grouped.items():
+            para = self._mapper.get_paragraph(p_idx)
+            para_start, _ = self._mapper.get_paragraph_range(p_idx)
             for err in p_errors:
                 local_start = err.start - para_start
                 local_end = err.end - para_start
-
-                if markup:
-                    self._apply_markup(para, runs, local_start, local_end,
-                                       err.error, err.correct)
+                if track_changes:
+                    run_ops.revise_span(para, local_start, local_end,
+                                        err.error, err.correct)
+                elif markup:
+                    run_ops.markup_span(para, local_start, local_end,
+                                        err.error, err.correct)
                 else:
-                    self._apply_direct_replace(runs, local_start, local_end,
-                                               err.correct)
+                    run_ops.replace_span(para, local_start, local_end, err.correct)
 
-        # Build corrected full text
-        if markup:
-            result.corrected_text = "\n".join(
-                p.text for p in self._doc.paragraphs
-            )
-        else:
-            result.corrected_text = self.get_full_text()
-
+        # Rebuild the mapper so corrected_text and any subsequent edits are valid.
+        self._mapper.build(self._paragraphs)
+        result = CorrectionResult(
+            original_text=original,
+            corrected_text=self.get_full_text(),
+            errors=errors,
+            paragraph_errors=grouped,
+        )
         self._result = result
         return result
 
-    def _apply_markup(
-        self, para, runs: list, start: int, end: int,
-        error_word: str, correct_word: str
-    ) -> None:
-        """Add revision markup: red strikethrough for error, blue for correction.
-        Preserves original run formatting (font, size, etc.)."""
-        full_text = para.text
-
-        # Save formatting from the first run before clearing
-        base_font = None
-        if runs:
-            base_font = runs[0].font
-
-        # Capture original formatting attributes
-        font_name = base_font.name if base_font else None
-        font_size = base_font.size if base_font else None
-        font_bold = base_font.bold if base_font else None
-        font_italic = base_font.italic if base_font else None
-        font_color = base_font.color.rgb if base_font and base_font.color.rgb else None
-
-        def _copy_base_font(run):
-            """Apply saved base formatting to a run."""
-            if font_name:
-                run.font.name = font_name
-            if font_size:
-                run.font.size = font_size
-            if font_bold is not None:
-                run.font.bold = font_bold
-            if font_italic is not None:
-                run.font.italic = font_italic
-
-        # Split: before_error + [error] + after_error
-        before = full_text[:start]
-        after = full_text[end:]
-
-        # Clear all runs
-        for run in runs:
-            run.text = ""
-
-        if not runs:
-            return
-
-        # Write before text with original formatting
-        runs[0].text = before
-
-        # Add error word (red strikethrough, keep original font)
-        error_run = para.add_run(error_word)
-        _copy_base_font(error_run)
-        error_run.font.color.rgb = RGBColor(0xDC, 0x26, 0x26)  # red
-        error_run.font.strike = True
-
-        # Add " → " separator
-        arrow_run = para.add_run(" → ")
-        _copy_base_font(arrow_run)
-        arrow_run.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
-
-        # Add correction (blue bold, keep original font)
-        correct_run = para.add_run(correct_word)
-        _copy_base_font(correct_run)
-        correct_run.font.color.rgb = RGBColor(0x25, 0x63, 0xEB)  # blue
-        correct_run.font.bold = True
-
-        # Add remaining text with original formatting
-        after_run = para.add_run(after)
-        _copy_base_font(after_run)
-
-    def _apply_direct_replace(
-        self, runs: list, start: int, end: int, replacement: str
-    ) -> None:
-        """Directly replace text in runs without markup."""
-        current_pos = 0
-        for run in runs:
-            run_text = run.text
-            run_len = len(run_text)
-            run_end = current_pos + run_len
-
-            if current_pos <= start < run_end:
-                # This run contains the start of the error
-                offset_in_run = start - current_pos
-                if end <= run_end:
-                    # Error is entirely within this run
-                    run.text = (
-                        run_text[:offset_in_run]
-                        + replacement
-                        + run_text[offset_in_run + (end - start):]
-                    )
-                    return
-                else:
-                    # Error spans multiple runs (handle start)
-                    run.text = run_text[:offset_in_run] + replacement
-                    # Remove text from subsequent runs
-                    remaining = end - run_end
-                    # Fall through to handle remaining runs
-
-            elif start < current_pos and end > current_pos:
-                # This run is entirely within the error range
-                chars_to_remove = min(run_len, end - current_pos)
-                run.text = run_text[chars_to_remove:]
-
-            current_pos = run_end
+    # ---- saving ----
 
     def save(self, filepath: str) -> None:
         """Save the document to a new file."""
@@ -242,33 +187,37 @@ class DocxHandler:
         self._doc.save(filepath)
 
     def replace_full_text(self, new_text: str) -> None:
-        """Replace the entire document content with new text.
+        """Replace body text line-by-line (used by the free-form edit mode).
 
-        Paragraphs are split by newlines. Each paragraph's content is
-        replaced while preserving the paragraph element and its style.
+        Only the collected paragraphs are rewritten, in order. Each line replaces
+        one paragraph's text while keeping the paragraph's style; the first run's
+        formatting is retained. Extra lines are appended as new body paragraphs.
+
+        Note: this is a plain-text merge and does not preserve per-run formatting
+        or table layout — it is only used when the user hand-edits the full text.
         """
         if not self._doc:
             raise RuntimeError("Document not loaded.")
 
-        new_paragraphs = new_text.split("\n")
-        existing_paragraphs = self._doc.paragraphs
+        new_lines = new_text.split("\n")
+        paras = self._paragraphs
 
-        for i, para_text in enumerate(new_paragraphs):
-            if i < len(existing_paragraphs):
-                para = existing_paragraphs[i]
-                # Clear existing runs and set new text
-                for run in para.runs:
-                    run.text = ""
+        for i, line in enumerate(new_lines):
+            if i < len(paras):
+                para = paras[i]
                 if para.runs:
-                    para.runs[0].text = para_text
+                    para.runs[0].text = line
+                    for run in para.runs[1:]:
+                        run.text = ""
                 else:
-                    para.add_run(para_text)
+                    para.add_run(line)
             else:
-                # More paragraphs than original — add new ones
-                self._doc.add_paragraph(para_text)
+                self._doc.add_paragraph(line)
 
-        # Remove extra paragraphs if new text has fewer
-        while len(self._doc.paragraphs) > len(new_paragraphs):
-            last_para = self._doc.paragraphs[-1]
-            last_para._element.getparent().remove(last_para._element)
+        # Blank out any leftover paragraphs beyond the new text.
+        for para in paras[len(new_lines):]:
+            for run in para.runs:
+                run.text = ""
 
+        self._paragraphs = self._collect_paragraphs()
+        self._mapper.build(self._paragraphs)

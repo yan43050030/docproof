@@ -12,9 +12,19 @@ class ErrorItem:
     correct: str  # corrected text
     start: int  # character offset in source text
     end: int  # character offset (exclusive)
+    category: str = "spelling"  # spelling | punctuation | grammar
+    source: str = ""  # engine that produced it (optional)
 
     def __repr__(self):
-        return f"ErrorItem({self.error!r} → {self.correct!r} @[{self.start}:{self.end}])"
+        return f"ErrorItem({self.error!r} → {self.correct!r} @[{self.start}:{self.end}] {self.category})"
+
+
+# Human-readable labels for categories (used by the UI and reports).
+CATEGORY_LABELS = {
+    "spelling": "错别字",
+    "punctuation": "标点/规范",
+    "grammar": "语法",
+}
 
 
 class BaseEngine(ABC):

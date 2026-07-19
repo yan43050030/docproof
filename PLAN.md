@@ -51,7 +51,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                   GUI 层 (PyQt6)                      │
+│                   GUI 层 (PySide6)                      │
 │                                                       │
 │  ┌──────────┐  ┌──────────────────────────────────┐  │
 │  │ 文件管理  │  │         修订模式显示区            │  │
@@ -94,7 +94,7 @@
 
 | 决策点 | 选择 | 理由 |
 |--------|------|------|
-| GUI 框架 | PyQt6 | 成熟稳定，支持富文本渲染，跨平台 |
+| GUI 框架 | PySide6 | 成熟稳定，支持富文本渲染，跨平台 |
 | 默认引擎 | Kenlm 小模型 | 150MB，CPU 友好，下载量小，适合离线分发 |
 | 文档格式 | 先支持 .docx，后续 .txt/.wps | .docx 最通用，python-docx 成熟 |
 | 修订定位 | 字符级（非段落级） | pycorrector 返回字符位置，天然支持精确定位 |
@@ -154,7 +154,7 @@ class PositionMapper:
 
 ### 模块 3：GUI 界面 (`docproof/ui/`)
 
-**职责**：PyQt6 桌面界面
+**职责**：PySide6 桌面界面
 
 ```
 ui/
@@ -327,7 +327,7 @@ dependencies = [
     "pycorrector>=1.1.0",    # 校对引擎
     "kenlm",                  # 语言模型
     "python-docx>=1.0.0",    # Word 文档读写
-    "PyQt6>=6.5.0",          # GUI 框架
+    "PySide6>=6.5.0",        # GUI 框架
 ]
 
 [project.optional-dependencies]
@@ -363,8 +363,8 @@ dev = [
 | pycorrector | Apache 2.0 | 是 |
 | kenlm | MIT | 是 |
 | python-docx | MIT | 是 |
-| PyQt6 | GPLv3 / 商用 | GPL 项目可用，商用需购买 |
+| PySide6 | LGPL v3 | 允许闭源商用，无需购买 |
 | LanguageTool（仅参考架构） | LGPL 2.1 | 参考架构不引入代码，无许可问题 |
 | DocProof 本身 | Apache 2.0 | 是 |
 
-> **注意**：如果未来需要闭源商用，PyQt6 需替换为 PySide6（LGPL 许可，允许闭源）。两个 API 几乎相同，迁移成本很低。
+> **说明**：项目使用 PySide6（LGPL 许可），允许闭源商用。
