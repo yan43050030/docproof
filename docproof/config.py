@@ -37,10 +37,13 @@ def init_config() -> None:
     Safe to call multiple times (idempotent).
     """
     os.makedirs(_MACBERT_CACHE, exist_ok=True)
+    os.makedirs(PROJECT_MODELS_DIR, exist_ok=True)
     if "HF_HOME" not in os.environ:
         os.environ["HF_HOME"] = _MACBERT_CACHE
     if "TRANSFORMERS_CACHE" not in os.environ:
         os.environ["TRANSFORMERS_CACHE"] = _MACBERT_CACHE
+    if "PYCORRECTOR_DATA_DIR" not in os.environ:
+        os.environ["PYCORRECTOR_DATA_DIR"] = PROJECT_MODELS_DIR
 
     if os.path.isdir(_THIRD_PARTY) and _THIRD_PARTY not in sys.path:
         sys.path.insert(0, _THIRD_PARTY)
@@ -117,30 +120,42 @@ def _check_dependencies(requires: list[str] | None) -> bool:
     return True
 
 
+def _find_file_recursive(filename: str, search_dir: str) -> str | None:
+    """Recursively search for a file by name under a directory. Returns path or None."""
+    if not os.path.isdir(search_dir):
+        return None
+    for root, _dirs, files in os.walk(search_dir):
+        if filename in files:
+            return os.path.join(root, filename)
+    return None
+
+
 def get_model_path(model_key: str) -> str | None:
-    """Find a model file across all search directories. Returns path or None."""
+    """Find a model file across all search directories (recursively). Returns path or None."""
     filename = MODELS[model_key].get("filename")
     if filename is None:
         return None  # not a downloadable file (e.g., macbert)
     for d in MODEL_SEARCH_DIRS:
-        path = os.path.join(d, filename)
-        if os.path.exists(path):
+        path = _find_file_recursive(filename, d)
+        if path is not None:
             return path
-    return os.path.join(MODEL_SEARCH_DIRS[0], filename)
+    return None
 
 
 def is_macbert_cached() -> bool:
     """Check whether MacBERT weights are already downloaded locally.
 
     Used to distinguish "dependencies installed" from "usable fully offline".
-    We look for any model weight file under the HuggingFace cache directory.
+    Recursively scans the entire models directory tree for weight files,
+    so users can place model files anywhere under models/.
     """
-    if not os.path.isdir(_MACBERT_CACHE):
-        return False
-    for root, _dirs, files in os.walk(_MACBERT_CACHE):
-        for f in files:
-            if f.endswith((".bin", ".safetensors")):
-                return True
+    for search_dir in MODEL_SEARCH_DIRS:
+        if not os.path.isdir(search_dir):
+            continue
+        for root, _dirs, files in os.walk(search_dir):
+            for f in files:
+                if f.endswith((".bin", ".safetensors")):
+                    return True
     return False
 
 
