@@ -30,7 +30,8 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install PySide6 python-docx kenlm jieba pypinyin loguru
-          pip install torch transformers --index-url https://download.pytorch.org/whl/cpu
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install transformers
           pip install pyinstaller
 
       - name: Run tests
