@@ -115,12 +115,28 @@ class SettingsDialog(QDialog):
         hint.setStyleSheet("color:#888; font-size:12px;")
         opt_layout.addWidget(hint)
 
-        self.rule_check = QCheckBox("启用标点/规范检查（半角标点、多余空格、重复标点）")
+        self.rule_check = QCheckBox("启用标点/规范检查")
         enabled = self._settings.rule_check_enabled if self._settings \
             else self._engine_manager.rule_check_enabled
         self.rule_check.setChecked(enabled)
         self.rule_check.toggled.connect(self._on_rule_toggled)
         opt_layout.addWidget(self.rule_check)
+
+        # Per-rule sub-options
+        def _sub(key: str, label: str):
+            cb = QCheckBox(label)
+            cb.setStyleSheet("margin-left: 24px;")
+            checked = bool(self._settings.get(key, True)) if self._settings else True
+            cb.setChecked(checked)
+            cb.toggled.connect(lambda on, k=key: self._on_rule_option(k, on))
+            cb.setEnabled(enabled)
+            opt_layout.addWidget(cb)
+            return cb
+
+        self.rule_ascii = _sub("rule_ascii_punct", "半角标点（如 , : → ，：）")
+        self.rule_space = _sub("rule_han_space", "汉字之间的多余空格")
+        self.rule_repeat = _sub("rule_repeat_punct", "重复标点（如 。。 → 。）")
+        self.rule_check.toggled.connect(self._sync_rule_subs)
 
         layout.addWidget(opt_group)
 
@@ -149,6 +165,20 @@ class SettingsDialog(QDialog):
         self._engine_manager.set_rule_check(checked)
         if self._settings:
             self._settings.set("rule_check_enabled", checked)
+
+    def _sync_rule_subs(self, enabled: bool):
+        for cb in (self.rule_ascii, self.rule_space, self.rule_repeat):
+            cb.setEnabled(enabled)
+
+    def _on_rule_option(self, key: str, checked: bool):
+        mapping = {
+            "rule_ascii_punct": "ascii_punct",
+            "rule_han_space": "han_space",
+            "rule_repeat_punct": "repeat_punct",
+        }
+        self._engine_manager.set_rule_options(**{mapping[key]: checked})
+        if self._settings:
+            self._settings.set(key, checked)
 
     def _refresh_model_list(self):
         """Refresh the model list showing status of each model."""

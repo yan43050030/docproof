@@ -15,6 +15,7 @@ from docproof.config import (
 from docproof.engine.base_engine import BaseEngine, ErrorItem
 from docproof.engine.kenlm_engine import KenlmEngine
 from docproof.engine.rule_engine import RuleEngine
+from docproof.engine.user_dict import FixDict
 
 
 class EngineManager:
@@ -26,6 +27,7 @@ class EngineManager:
         self._threshold: float = 0.5
         self._rule_engine = RuleEngine()
         self._rule_check_enabled: bool = True
+        self._fix_dict = FixDict()
 
     # ---- configuration ----
 
@@ -38,9 +40,24 @@ class EngineManager:
     def set_rule_check(self, enabled: bool) -> None:
         self._rule_check_enabled = enabled
 
+    def set_rule_options(self, *, ascii_punct: bool | None = None,
+                         han_space: bool | None = None,
+                         repeat_punct: bool | None = None) -> None:
+        """Toggle individual rule checks."""
+        if ascii_punct is not None:
+            self._rule_engine.check_ascii_punct = ascii_punct
+        if han_space is not None:
+            self._rule_engine.check_han_space = han_space
+        if repeat_punct is not None:
+            self._rule_engine.check_repeat_punct = repeat_punct
+
     @property
     def rule_check_enabled(self) -> bool:
         return self._rule_check_enabled
+
+    @property
+    def fix_dict(self) -> FixDict:
+        return self._fix_dict
 
     def proofread(self, text: str, progress=None, should_stop=None
                   ) -> list[ErrorItem]:
@@ -75,6 +92,18 @@ class EngineManager:
 
         if self._rule_check_enabled:
             errors = self._merge(errors, self._rule_engine.correct(text))
+
+        # Forced corrections from the user's fix dictionary win over everything.
+        self._fix_dict.reload()
+        fix_errors = self._fix_dict.find_errors(text)
+        if fix_errors:
+            fix_spans = [(e.start, e.end) for e in fix_errors]
+            errors = [
+                e for e in errors
+                if not any(e.start < fe and e.end > fs for fs, fe in fix_spans)
+            ]
+            errors.extend(fix_errors)
+
         errors.sort(key=lambda e: e.start)
         return errors
 

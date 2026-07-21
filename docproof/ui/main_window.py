@@ -119,6 +119,11 @@ class MainWindow(QMainWindow):
         self._settings = SettingsStore()
         self._engine_manager.set_threshold(self._settings.threshold)
         self._engine_manager.set_rule_check(self._settings.rule_check_enabled)
+        self._engine_manager.set_rule_options(
+            ascii_punct=bool(self._settings.get("rule_ascii_punct", True)),
+            han_space=bool(self._settings.get("rule_han_space", True)),
+            repeat_punct=bool(self._settings.get("rule_repeat_punct", True)),
+        )
 
         self.setWindowTitle(APP_NAME)
         self.setMinimumSize(1000, 700)
@@ -181,9 +186,13 @@ class MainWindow(QMainWindow):
         settings_action = QAction("设置...", self)
         settings_action.triggered.connect(self._show_model_manager)
         tools_menu.addAction(settings_action)
-        dict_action = QAction("编辑用户词典...", self)
+        dict_action = QAction("编辑用户词典（白名单）...", self)
         dict_action.triggered.connect(self._edit_user_dict)
         tools_menu.addAction(dict_action)
+
+        fix_action = QAction("编辑强制纠正词典...", self)
+        fix_action.triggered.connect(self._edit_fix_dict)
+        tools_menu.addAction(fix_action)
 
         help_menu = menu_bar.addMenu("帮助(&H)")
         about_action = QAction("关于 DocProof", self)
@@ -337,6 +346,10 @@ class MainWindow(QMainWindow):
         self._error_list.accept_all.connect(self._on_accept_all)
         # Clicking an error inside the text selects it in the list.
         self._correction_view.error_clicked.connect(self._error_list.select_error)
+        # Re-render after the user edits a suggestion word.
+        self._error_list.suggestion_edited.connect(
+            lambda idx: self._refresh_correction_view()
+        )
 
         layout.addWidget(self._splitter)
 
@@ -535,7 +548,7 @@ class MainWindow(QMainWindow):
 
         text = self._docx_handler.get_full_text()
         self._correction_view.show_corrections(text, errors)
-        self._error_list.set_errors(errors)
+        self._error_list.set_errors(errors, full_text=text)
 
         msg = f"校对完成 — 发现 {len(errors)} 处疑似错误"
         if filtered_count > 0:
@@ -978,6 +991,22 @@ class MainWindow(QMainWindow):
             "词典位置:\n"
             f"{dict_path}\n\n"
             f"当前词条数: {self._user_dict.word_count}"
+        )
+
+    def _edit_fix_dict(self):
+        """Open the forced-correction dictionary for editing."""
+        fix_dict = self._engine_manager.fix_dict
+        fix_dict.ensure_file()
+        QDesktopServices.openUrl(QUrl.fromLocalFile(fix_dict.dict_path))
+        QMessageBox.information(
+            self, "强制纠正词典",
+            "每行一对「错词 正词」（空格分隔），例如：\n"
+            "    因该 应该\n\n"
+            "校对时会无条件把左边的词报为错误并建议改为右边的词，\n"
+            "优先于引擎自己的判断。保存后重新校对即可生效。\n\n"
+            "词典位置:\n"
+            f"{fix_dict.dict_path}\n\n"
+            f"当前词条数: {fix_dict.pair_count}"
         )
 
     # ---- Recent files ----

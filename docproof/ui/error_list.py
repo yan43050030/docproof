@@ -5,7 +5,9 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QAction
 from PySide6.QtWidgets import (
+    QComboBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QListWidget,
     QListWidgetItem,
@@ -17,6 +19,8 @@ from PySide6.QtWidgets import (
 
 from docproof.engine.base_engine import ErrorItem, CATEGORY_LABELS
 
+_CONTEXT_CHARS = 10  # characters of context shown on each side of an error
+
 
 class ErrorListPanel(QWidget):
     """Panel showing a list of errors with accept/ignore buttons."""
@@ -25,17 +29,21 @@ class ErrorListPanel(QWidget):
     error_accepted = Signal(int)  # error index
     error_ignored = Signal(int)  # error index
     accept_all = Signal()  # accept all errors at once
+    suggestion_edited = Signal(int)  # error index whose suggestion was changed
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._errors: list[ErrorItem] = []
+        self._full_text = ""  # source text for context previews
         self._ignored: set[int] = set()
         self._accepted: set[int] = set()
         # Unified undo stack of ("accept" | "ignore", index) actions.
         self._history: list[tuple[str, int]] = []
+        self._filter_category: str | None = None  # None = show all
         self._setup_ui()
         self.list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list_widget.customContextMenuRequested.connect(self._show_context_menu)
+        self.list_widget.itemDoubleClicked.connect(self._edit_suggestion_item)
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -52,6 +60,14 @@ class ErrorListPanel(QWidget):
         header.addWidget(title)
 
         header.addStretch()
+
+        # Category filter
+        self.filter_combo = QComboBox()
+        self.filter_combo.addItem("全部类型", None)
+        for key, label in CATEGORY_LABELS.items():
+            self.filter_combo.addItem(label, key)
+        self.filter_combo.currentIndexChanged.connect(self._on_filter_changed)
+        header.addWidget(self.filter_combo)
 
         self.count_label = QLabel("0 处")
         self.count_label.setStyleSheet("color: #888;")
@@ -129,13 +145,41 @@ class ErrorListPanel(QWidget):
 
         layout.addLayout(btn_layout)
 
-    def set_errors(self, errors: list[ErrorItem]) -> None:
-        """Load a new set of errors."""
+    def set_errors(self, errors: list[ErrorItem], full_text: str = "") -> None:
+        """Load a new set of errors. ``full_text`` enables context previews."""
         self._errors = errors
+        self._full_text = full_text
         self._ignored = set()
         self._accepted = set()
         self._history = []
         self._rebuild_list()
+
+    def add_errors(self, errors: list[ErrorItem], full_text: str = "") -> None:
+        """Append newly streamed errors without resetting accept/ignore state."""
+        self._errors = errors
+        if full_text:
+            self._full_text = full_text
+        self._rebuild_list()
+
+    def _on_filter_changed(self, index: int) -> None:
+        self._filter_category = self.filter_combo.itemData(index)
+        self._rebuild_list()
+
+    def _context_of(self, err: ErrorItem) -> tuple[str, int]:
+        """Return (context snippet, paragraph number 1-based) for an error."""
+        text = self._full_text
+        if not text or err.start >= len(text):
+            return "", 0
+        para_no = text.count("\n", 0, err.start) + 1
+        line_start = text.rfind("\n", 0, err.start) + 1
+        line_end = text.find("\n", err.end)
+        if line_end == -1:
+            line_end = len(text)
+        left = text[max(line_start, err.start - _CONTEXT_CHARS):err.start]
+        right = text[err.end:min(line_end, err.end + _CONTEXT_CHARS)]
+        pre = "…" if err.start - _CONTEXT_CHARS > line_start else ""
+        post = "…" if err.end + _CONTEXT_CHARS < line_end else ""
+        return f"{pre}{left}【{err.error}】{right}{post}", para_no
 
     def select_error(self, orig_idx: int) -> None:
         """Select the list row for an error by its original index (e.g. after
@@ -150,26 +194,38 @@ class ErrorListPanel(QWidget):
         """Rebuild the list widget from current state."""
         self.list_widget.clear()
 
-        visible_count = 0
+        remaining = 0
+        visible = 0
         for i, err in enumerate(self._errors):
             if i in self._ignored or i in self._accepted:
                 continue
-            visible_count += 1
+            remaining += 1
+            category = getattr(err, "category", "spelling")
+            if self._filter_category and category != self._filter_category:
+                continue
+            visible += 1
 
             correct = err.correct if err.correct != "" else "（删除）"
-            category = getattr(err, "category", "spelling")
-            if category != "spelling":
-                tag = CATEGORY_LABELS.get(category, category)
-                text = f"[{tag}] {err.error} → {correct}"
+            tag = CATEGORY_LABELS.get(category, category)
+            head = f"{err.error} → {correct}" if category == "spelling" \
+                else f"[{tag}] {err.error} → {correct}"
+
+            context, para_no = self._context_of(err)
+            if context:
+                text = f"{head}\n{context}  (第{para_no}段)"
             else:
-                text = f"{err.error} → {correct}"
+                text = head
             item = QListWidgetItem(text)
             item.setData(Qt.ItemDataRole.UserRole, i)
+            item.setToolTip(f"{tag}：{err.error} → {correct}\n双击可修改建议词")
 
             self.list_widget.addItem(item)
 
-        self.count_label.setText(f"{visible_count} 处")
-        self.accept_all_btn.setEnabled(visible_count > 0)
+        if self._filter_category and visible != remaining:
+            self.count_label.setText(f"{visible}/{remaining} 处")
+        else:
+            self.count_label.setText(f"{remaining} 处")
+        self.accept_all_btn.setEnabled(visible > 0)
 
     def _on_row_changed(self, row: int) -> None:
         if row >= 0:
@@ -219,11 +275,36 @@ class ErrorListPanel(QWidget):
             accept_action.triggered.connect(lambda: self._accept_by_index(idx))
             menu.addAction(accept_action)
 
+            edit_action = QAction("修改建议词...", self)
+            edit_action.triggered.connect(lambda: self._edit_suggestion(idx))
+            menu.addAction(edit_action)
+
             ignore_action = QAction("忽略", self)
             ignore_action.triggered.connect(lambda: self._ignore_by_index(idx))
             menu.addAction(ignore_action)
 
         menu.exec(self.list_widget.viewport().mapToGlobal(pos))
+
+    def _edit_suggestion_item(self, item: QListWidgetItem) -> None:
+        if item is not None:
+            self._edit_suggestion(item.data(Qt.ItemDataRole.UserRole))
+
+    def _edit_suggestion(self, idx: int) -> None:
+        """Let the user replace the engine's suggestion with their own word."""
+        if idx < 0 or idx >= len(self._errors):
+            return
+        err = self._errors[idx]
+        new_word, ok = QInputDialog.getText(
+            self, "修改建议词",
+            f"「{err.error}」改为：\n（留空表示删除该词）",
+            text=err.correct,
+        )
+        if not ok or new_word == err.correct:
+            return
+        err.correct = new_word
+        self._rebuild_list()
+        self.select_error(idx)
+        self.suggestion_edited.emit(idx)
 
     def _undo_ignore(self, idx: int) -> None:
         """Restore a previously ignored error (context menu)."""

@@ -43,10 +43,19 @@ _RE_REPEAT_PUNCT = re.compile(rf"([{_REPEATABLE_CJK}])\1+")
 
 
 class RuleEngine(BaseEngine):
-    """Lightweight punctuation/normalization proofreading engine."""
+    """Lightweight punctuation/normalization proofreading engine.
 
-    def __init__(self):
+    Each check can be toggled individually so users can silence a rule that
+    doesn't fit their documents (e.g. intentional spaces between Han chars).
+    """
+
+    def __init__(self, check_ascii_punct: bool = True,
+                 check_han_space: bool = True,
+                 check_repeat_punct: bool = True):
         super().__init__(name="rule")
+        self.check_ascii_punct = check_ascii_punct
+        self.check_han_space = check_han_space
+        self.check_repeat_punct = check_repeat_punct
         self._loaded = True  # no model to load
 
     def load(self) -> bool:
@@ -59,27 +68,30 @@ class RuleEngine(BaseEngine):
     def correct(self, text: str) -> list[ErrorItem]:
         errors: list[ErrorItem] = []
 
-        for m in _RE_ASCII_PUNCT.finditer(text):
-            ch = m.group(1)
-            errors.append(ErrorItem(
-                error=ch, correct=_ASCII_TO_FULL[ch],
-                start=m.start(1), end=m.end(1),
-                category="punctuation", source="rule",
-            ))
+        if self.check_ascii_punct:
+            for m in _RE_ASCII_PUNCT.finditer(text):
+                ch = m.group(1)
+                errors.append(ErrorItem(
+                    error=ch, correct=_ASCII_TO_FULL[ch],
+                    start=m.start(1), end=m.end(1),
+                    category="punctuation", source="rule",
+                ))
 
-        for m in _RE_HAN_SPACE.finditer(text):
-            errors.append(ErrorItem(
-                error=m.group(1), correct="",
-                start=m.start(1), end=m.end(1),
-                category="punctuation", source="rule",
-            ))
+        if self.check_han_space:
+            for m in _RE_HAN_SPACE.finditer(text):
+                errors.append(ErrorItem(
+                    error=m.group(1), correct="",
+                    start=m.start(1), end=m.end(1),
+                    category="punctuation", source="rule",
+                ))
 
-        for m in _RE_REPEAT_PUNCT.finditer(text):
-            errors.append(ErrorItem(
-                error=m.group(0), correct=m.group(1),
-                start=m.start(), end=m.end(),
-                category="punctuation", source="rule",
-            ))
+        if self.check_repeat_punct:
+            for m in _RE_REPEAT_PUNCT.finditer(text):
+                errors.append(ErrorItem(
+                    error=m.group(0), correct=m.group(1),
+                    start=m.start(), end=m.end(),
+                    category="punctuation", source="rule",
+                ))
 
         errors.sort(key=lambda e: e.start)
         return errors

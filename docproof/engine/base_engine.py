@@ -24,6 +24,7 @@ CATEGORY_LABELS = {
     "spelling": "错别字",
     "punctuation": "标点/规范",
     "grammar": "语法",
+    "custom": "自定义",
 }
 
 

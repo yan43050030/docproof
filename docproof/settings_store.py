@@ -18,6 +18,9 @@ DEFAULTS: dict = {
     "last_model": None,
     "macbert_threshold": 0.5,
     "rule_check_enabled": True,
+    "rule_ascii_punct": True,   # 半角标点检查
+    "rule_han_space": True,     # 汉字间空格检查
+    "rule_repeat_punct": True,  # 重复标点检查
     "window_geometry": None,  # base64 QByteArray hex, optional
 }
 
