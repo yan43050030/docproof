@@ -10,7 +10,7 @@ from docproof.config import (
     ENGINE_TYPES,
     get_available_model,
     get_model_path,
-    _check_dependencies,
+    check_macbert_fully_available,
 )
 from docproof.engine.base_engine import BaseEngine, ErrorItem
 from docproof.engine.kenlm_engine import KenlmEngine
@@ -232,15 +232,16 @@ class EngineManager:
         info = MODELS[model_key]
         engine_type = info.get("engine_type", "kenlm")
 
-        # Check dependencies first
-        requires = info.get("requires", [])
-        if requires and not _check_dependencies(requires):
-            return False, (
-                f"MacBERT 需要额外依赖:\n"
-                f"  pip install torch transformers\n\n"
-                f"请在终端运行上述命令后重试。\n"
-                f"或使用 Kenlm 模型（无需额外依赖）。"
-            )
+        # Check dependencies first (use deep import check for macbert)
+        if engine_type == ENGINE_TYPES["macbert"]:
+            deps_ok, detail = check_macbert_fully_available()
+            if not deps_ok:
+                return False, (
+                    f"MacBERT 无法加载: {detail}\n\n"
+                    f"请安装所需依赖后重试:\n"
+                    f"  pip install torch transformers loguru tqdm pypinyin\n\n"
+                    f"或使用 Kenlm 模型（无需额外依赖）。"
+                )
 
         # Unload current engine
         if self._engine:
@@ -272,14 +273,8 @@ class EngineManager:
 
     @staticmethod
     def check_macbert_ready() -> tuple[bool, str]:
-        """Check if MacBERT dependencies are installed. Returns (ready, help_text)."""
-        if _check_dependencies(["torch", "transformers"]):
-            return True, "MacBERT 依赖已就绪，可以使用。"
-        return False, (
-            "MacBERT 需要安装 PyTorch 和 Transformers:\n\n"
-            "  pip install torch transformers\n\n"
-            "首次运行时会自动下载模型 (~400MB)。"
-        )
+        """Check if MacBERT can actually be loaded. Returns (ready, help_text)."""
+        return check_macbert_fully_available()
 
     # ---- Internal ----
 

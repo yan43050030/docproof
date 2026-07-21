@@ -65,10 +65,12 @@ class MacBertEngine(BaseEngine):
         try:
             from pycorrector.macbert.macbert_corrector import MacBertCorrector
         except ImportError as e:
+            missing = str(e).replace("'", "")
             raise ImportError(
-                "MacBERT 引擎需要 PyTorch 和 Transformers。\n"
-                "请运行: pip install torch transformers\n"
-                "或下载完整版便携包。"
+                f"MacBERT 引擎加载失败: {missing}\n\n"
+                f"请确保已安装所有依赖:\n"
+                f"  pip install torch transformers loguru tqdm pypinyin\n"
+                f"或下载完整版便携包。"
             ) from e
 
         if progress_callback:

@@ -35,8 +35,12 @@ class KenlmEngine(BaseEngine):
         try:
             from pycorrector.corrector import Corrector
         except ImportError as e:
+            missing = str(e).replace("'", "")
             raise ImportError(
-                "无法导入 pycorrector。请确保 third_party/pycorrector 目录存在。"
+                f"无法导入 pycorrector: {missing}\n\n"
+                f"请确保:\n"
+                f"1. third_party/pycorrector 目录存在且完整\n"
+                f"2. 已安装所有依赖: pip install pypinyin loguru kenlm"
             ) from e
 
         model_path = self.model_path

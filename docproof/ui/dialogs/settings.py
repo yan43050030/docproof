@@ -25,7 +25,7 @@ from docproof.config import (
     MODEL_SEARCH_DIRS,
     is_model_available,
     get_model_path,
-    _check_dependencies,
+    check_macbert_fully_available,
 )
 from docproof.engine.engine_manager import EngineManager
 from docproof.ui.welcome_wizard import WelcomeWizard
@@ -204,14 +204,9 @@ class SettingsDialog(QDialog):
             engine_type = info.get("engine_type", "kenlm")
 
             if engine_type == "macbert":
-                # MacBERT: check if torch/transformers installed
-                deps_ok = _check_dependencies(info.get("requires", []))
-                if deps_ok:
-                    status = "✓ 依赖已安装，首次使用自动下载模型"
-                    color = Qt.GlobalColor.black
-                else:
-                    status = "需要安装 torch, transformers"
-                    color = Qt.GlobalColor.gray
+                # MacBERT: perform a real import check (not just __import__)
+                deps_ok, status = check_macbert_fully_available()
+                color = Qt.GlobalColor.black if deps_ok else Qt.GlobalColor.gray
                 size_text = "~400MB"
             else:
                 # Kenlm: check if .klm file exists
@@ -267,13 +262,14 @@ class SettingsDialog(QDialog):
                 self.model_status.setStyleSheet("color: #DC2626; padding: 4px;")
                 return
 
-        # For macbert, check dependencies
+        # For macbert, check dependencies with deep import check
         if engine_type == "macbert":
-            deps_ok = _check_dependencies(info.get("requires", []))
+            deps_ok, detail = check_macbert_fully_available()
             if not deps_ok:
                 self.model_status.setText(
-                    "MacBERT 需要额外依赖，请在终端运行:\n"
-                    "  pip install torch transformers\n\n"
+                    f"MacBERT 无法加载: {detail}\n\n"
+                    "请安装所需依赖:\n"
+                    "  pip install torch transformers loguru tqdm pypinyin\n\n"
                     "安装完成后重新点击「切换到此模型」。"
                 )
                 self.model_status.setStyleSheet("color: #DC2626; padding: 4px;")

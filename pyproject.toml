@@ -7,7 +7,11 @@ dependencies = [
     "PySide6>=6.5.0",
     "python-docx>=1.0.0",
     "kenlm>=0.3.0",
-    "pycorrector>=1.1.0",
+    # Required by vendored pycorrector in third_party/
+    "jieba>=0.42.0",
+    "pypinyin>=0.44.0",
+    "loguru>=0.6.0",
+    "tqdm>=4.62.0",
 ]
 
 [project.optional-dependencies]
@@ -17,6 +21,12 @@ macbert = [
 ]
 build = [
     "pyinstaller>=6.0.0",
+]
+# pycorrector from PyPI provides extra data files (same_pinyin.txt etc.).
+# The vendored copy in third_party/ already includes these, but installing
+# the pip package ensures all transitive deps are available for development.
+dev = [
+    "pycorrector>=1.1.0",
 ]
 
 [project.scripts]
@@ -49,6 +59,7 @@ hidden_imports = [
     "pypinyin",
     "jieba",
     "loguru",
+    "tqdm",
 ]
 exclude_modules = [
     "torch",

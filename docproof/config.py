@@ -7,13 +7,18 @@ import sys
 
 APP_NAME = "DocProof"
 
-# Project root (where setup.py/pyproject.toml lives)
-_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+# When running as a PyInstaller bundle, sys._MEIPASS points to the _internal/
+# directory where all bundled files (including --add-data) are extracted.
+# Source runs resolve everything relative to __file__.
+if getattr(sys, "frozen", False):
+    _BASE_DIR: str = sys._MEIPASS
+else:
+    _BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 # Model search paths (checked in order, first found wins)
 # 1. Project-local models/ — portable, copy with the app
 # 2. User data dir — traditional per-user location
-PROJECT_MODELS_DIR = os.path.join(_PROJECT_ROOT, "models")
+PROJECT_MODELS_DIR = os.path.join(_BASE_DIR, "models")
 USER_DATA_DIR = os.path.expanduser("~/.docproof")
 USER_MODELS_DIR = os.path.join(USER_DATA_DIR, "models")
 MODEL_SEARCH_DIRS = [PROJECT_MODELS_DIR, USER_MODELS_DIR]
@@ -24,10 +29,17 @@ SETTINGS_PATH = os.path.join(USER_DATA_DIR, "settings.json")
 # MacBERT HuggingFace cache path
 _MACBERT_CACHE = os.path.join(PROJECT_MODELS_DIR, "macbert_cache")
 
-# Third-party pycorrector path
-_THIRD_PARTY = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "third_party", "pycorrector")
-)
+# Third-party pycorrector path.
+# In source mode, pycorrector lives at third_party/pycorrector/pycorrector/,
+# so we add third_party/pycorrector/ to sys.path so "import pycorrector" works.
+# In PyInstaller frozen mode, --add-data extracts the pycorrector package
+# directly into _internal/pycorrector/, so we add _internal/ to sys.path.
+if getattr(sys, "frozen", False):
+    _THIRD_PARTY = sys._MEIPASS
+else:
+    _THIRD_PARTY = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "third_party", "pycorrector")
+    )
 
 
 def init_config() -> None:
@@ -118,6 +130,21 @@ def _check_dependencies(requires: list[str] | None) -> bool:
         except ImportError:
             return False
     return True
+
+
+def check_macbert_fully_available() -> tuple[bool, str]:
+    """Check whether the MacBERT engine can actually be loaded.
+
+    Goes beyond _check_dependencies by performing the real import that
+    MacBertEngine.load() uses.  Returns (available, detail_string).
+    """
+    if not _check_dependencies(["torch", "transformers"]):
+        return False, "缺少 PyTorch / Transformers"
+    try:
+        from pycorrector.macbert.macbert_corrector import MacBertCorrector  # noqa: F401
+        return True, "依赖已就绪，首次使用自动下载模型"
+    except ImportError as e:
+        return False, f"缺少依赖: {e}".replace("'", "")
 
 
 def _find_file_recursive(filename: str, search_dir: str) -> str | None:
