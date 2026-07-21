@@ -79,6 +79,10 @@ class DocProofApp:
 
 
 def main():
+    from docproof.logging_setup import init_logging
+    from docproof.version import __version__
+    logger = init_logging()
+    logger.info("DocProof v%s 启动", __version__)
     app = DocProofApp()
     sys.exit(app.run())
 

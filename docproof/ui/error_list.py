@@ -31,7 +31,8 @@ class ErrorListPanel(QWidget):
         self._errors: list[ErrorItem] = []
         self._ignored: set[int] = set()
         self._accepted: set[int] = set()
-        self._ignored_history: list[int] = []  # stack for undo
+        # Unified undo stack of ("accept" | "ignore", index) actions.
+        self._history: list[tuple[str, int]] = []
         self._setup_ui()
         self.list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list_widget.customContextMenuRequested.connect(self._show_context_menu)
@@ -133,8 +134,17 @@ class ErrorListPanel(QWidget):
         self._errors = errors
         self._ignored = set()
         self._accepted = set()
-        self._ignored_history = []
+        self._history = []
         self._rebuild_list()
+
+    def select_error(self, orig_idx: int) -> None:
+        """Select the list row for an error by its original index (e.g. after
+        the user clicked the error inside the text view)."""
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            if item is not None and item.data(Qt.ItemDataRole.UserRole) == orig_idx:
+                self.list_widget.setCurrentRow(i)
+                return
 
     def _rebuild_list(self) -> None:
         """Rebuild the list widget from current state."""
@@ -171,10 +181,7 @@ class ErrorListPanel(QWidget):
         item = self.list_widget.currentItem()
         if item is None:
             return
-        idx = item.data(Qt.ItemDataRole.UserRole)
-        self._accepted.add(idx)
-        self.error_accepted.emit(idx)
-        self._rebuild_list()
+        self._accept_by_index(item.data(Qt.ItemDataRole.UserRole))
 
     def _accept_all(self) -> None:
         """Accept all remaining visible errors."""
@@ -184,6 +191,7 @@ class ErrorListPanel(QWidget):
                 continue
             idx = item.data(Qt.ItemDataRole.UserRole)
             self._accepted.add(idx)
+            self._history.append(("accept", idx))
         self.accept_all.emit()
         self._rebuild_list()
 
@@ -191,11 +199,7 @@ class ErrorListPanel(QWidget):
         item = self.list_widget.currentItem()
         if item is None:
             return
-        idx = item.data(Qt.ItemDataRole.UserRole)
-        self._ignored.add(idx)
-        self._ignored_history.append(idx)
-        self.error_ignored.emit(idx)
-        self._rebuild_list()
+        self._ignore_by_index(item.data(Qt.ItemDataRole.UserRole))
 
     def _show_context_menu(self, pos):
         """Right-click context menu for error list items."""
@@ -222,46 +226,39 @@ class ErrorListPanel(QWidget):
         menu.exec(self.list_widget.viewport().mapToGlobal(pos))
 
     def _undo_ignore(self, idx: int) -> None:
-        """Restore a previously ignored error."""
+        """Restore a previously ignored error (context menu)."""
         if idx in self._ignored:
             self._ignored.discard(idx)
-            if idx in self._ignored_history:
-                self._ignored_history.remove(idx)
+            self._history = [h for h in self._history if h != ("ignore", idx)]
             self._rebuild_list()
-            # Select the restored item
-            for i in range(self.list_widget.count()):
-                item = self.list_widget.item(i)
-                if item is not None and item.data(Qt.ItemDataRole.UserRole) == idx:
-                    self.list_widget.setCurrentRow(i)
-                    self.error_selected.emit(idx)
-                    break
+            self.select_error(idx)
 
-    def undo_last_ignore(self) -> int | None:
-        """Undo the most recent ignore. Returns the restored index or None."""
-        while self._ignored_history:
-            idx = self._ignored_history.pop()
-            if idx in self._ignored:
+    def undo_last(self) -> tuple[str, int] | None:
+        """Undo the most recent accept/ignore. Returns (action, index) or None."""
+        while self._history:
+            action, idx = self._history.pop()
+            if action == "ignore" and idx in self._ignored:
                 self._ignored.discard(idx)
-                self._rebuild_list()
-                # Select the restored item
-                for i in range(self.list_widget.count()):
-                    item = self.list_widget.item(i)
-                    if item is not None and item.data(Qt.ItemDataRole.UserRole) == idx:
-                        self.list_widget.setCurrentRow(i)
-                        break
-                return idx
+            elif action == "accept" and idx in self._accepted:
+                self._accepted.discard(idx)
+            else:
+                continue
+            self._rebuild_list()
+            self.select_error(idx)
+            return action, idx
         return None
 
     def _accept_by_index(self, idx: int) -> None:
-        """Accept a specific error by index (for context menu)."""
+        """Accept a specific error by index."""
         self._accepted.add(idx)
+        self._history.append(("accept", idx))
         self.error_accepted.emit(idx)
         self._rebuild_list()
 
     def _ignore_by_index(self, idx: int) -> None:
-        """Ignore a specific error by index (for context menu)."""
+        """Ignore a specific error by index."""
         self._ignored.add(idx)
-        self._ignored_history.append(idx)
+        self._history.append(("ignore", idx))
         self.error_ignored.emit(idx)
         self._rebuild_list()
 

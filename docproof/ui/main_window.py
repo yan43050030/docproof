@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from docproof.config import APP_NAME, MODELS, PROJECT_MODELS_DIR, MODEL_SEARCH_DIRS
+from docproof.logging_setup import get_logger
 from docproof.version import __version__
 from docproof.document.docx_handler import DocxHandler
 from docproof.document.text_handler import TextHandler
@@ -47,6 +48,11 @@ _DOCX_EXTS = (".docx",)
 _TEXT_EXTS = (".txt", ".md")
 _OPENABLE_EXTS = _DOCX_EXTS + _TEXT_EXTS
 _LEGACY_EXTS = (".doc", ".wps", ".wpt")  # binary formats we can't parse
+
+# Documents above this size get a confirmation prompt before loading.
+_LARGE_FILE_MB = 50
+
+log = get_logger(__name__)
 
 
 def _make_handler(filepath: str):
@@ -293,8 +299,12 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Drop hint overlay
-        self._drop_hint = QLabel("拖放 Word 文档 (.docx) 到这里，或点击「打开文档」")
+        # Drop hint overlay (clickable — opens the file dialog)
+        self._drop_hint = QLabel(
+            "拖放文档 (.docx / .txt / .md) 到这里，或点击此处打开文件"
+        )
+        self._drop_hint.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._drop_hint.mousePressEvent = lambda e: self._open_file()
         self._drop_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._drop_hint.setStyleSheet("""
             QLabel {
@@ -325,6 +335,8 @@ class MainWindow(QMainWindow):
         self._error_list.error_accepted.connect(self._on_error_accepted)
         self._error_list.error_ignored.connect(self._on_error_ignored)
         self._error_list.accept_all.connect(self._on_accept_all)
+        # Clicking an error inside the text selects it in the list.
+        self._correction_view.error_clicked.connect(self._error_list.select_error)
 
         layout.addWidget(self._splitter)
 
@@ -350,6 +362,17 @@ class MainWindow(QMainWindow):
 
         self._char_count = QLabel("字数: 0")
         self._statusbar.addPermanentWidget(self._char_count)
+
+    def _set_status(self, msg: str, kind: str = "info") -> None:
+        """Set the status bar text. Always resets styling so a colored message
+        (ok/error) never bleeds into subsequent plain messages."""
+        styles = {
+            "info": "",
+            "ok": "color: #16A34A; font-weight: bold;",
+            "error": "color: #DC2626;",
+        }
+        self._status_text.setStyleSheet(styles.get(kind, ""))
+        self._status_text.setText(msg)
 
     def closeEvent(self, event):
         """Persist geometry and wait for the worker to finish before closing."""
@@ -401,12 +424,37 @@ class MainWindow(QMainWindow):
                 "仅支持 .docx、.txt、.md 文件。"
             )
             return
+
+        try:
+            size_mb = os.path.getsize(filepath) / 1024 / 1024
+        except OSError as e:
+            QMessageBox.critical(self, "错误", f"无法读取文件:\n{e}")
+            return
+        if size_mb > _LARGE_FILE_MB:
+            ret = QMessageBox.question(
+                self, "文件较大",
+                f"该文件约 {size_mb:.0f}MB，加载和校对可能较慢。\n是否继续？",
+            )
+            if ret != QMessageBox.StandardButton.Yes:
+                return
+
         try:
             self._docx_handler = _make_handler(filepath)
             self._docx_handler.load()
         except Exception as e:
-            QMessageBox.critical(self, "错误", f"无法打开文档:\n{e}")
+            log.exception("打开文档失败: %s", filepath)
+            import zipfile
+            from docx.opc.exceptions import PackageNotFoundError
+            if isinstance(e, (zipfile.BadZipFile, KeyError, PackageNotFoundError)) \
+                    or "not a zip" in str(e).lower():
+                msg = ("文件已损坏或不是有效的 .docx 文档。\n\n"
+                       "如果是 .doc/.wps 改名而来，请在 Word/WPS 中"
+                       "用「另存为」生成真正的 .docx。")
+            else:
+                msg = f"无法打开文档:\n{e}"
+            QMessageBox.critical(self, "错误", msg)
             return
+        log.info("已加载文档: %s (%.1fMB)", filepath, size_mb)
 
         self._proofread_done = False
         self._current_errors = []
@@ -421,7 +469,7 @@ class MainWindow(QMainWindow):
         self.export_btn.setEnabled(False)
 
         self._update_title(filepath)
-        self._status_text.setText(f"已加载: {os.path.basename(filepath)}")
+        self._set_status(f"已加载: {os.path.basename(filepath)}")
         self._char_count.setText(f"字数: {len(text)}")
 
         self._add_recent_file(filepath)
@@ -439,7 +487,7 @@ class MainWindow(QMainWindow):
         self.proofread_btn.setEnabled(False)
         self.cancel_btn.setVisible(True)
         self._progress.setVisible(True)
-        self._status_text.setText("正在校对...")
+        self._set_status("正在校对...")
 
         text = self._docx_handler.get_full_text()
 
@@ -447,7 +495,7 @@ class MainWindow(QMainWindow):
         self._worker = ProofreadWorker(self._engine_manager, text)
         self._worker.finished.connect(self._on_proofread_done)
         self._worker.error.connect(self._on_proofread_error)
-        self._worker.progress.connect(lambda msg: self._status_text.setText(msg))
+        self._worker.progress.connect(lambda msg: self._set_status(msg))
         self._worker.progress_pct.connect(self._on_proofread_progress)
         self._worker.start()
 
@@ -456,7 +504,7 @@ class MainWindow(QMainWindow):
         if total > 0:
             self._progress.setMaximum(total)
             self._progress.setValue(done)
-            self._status_text.setText(f"正在校对... {done}/{total} 段")
+            self._set_status(f"正在校对... {done}/{total} 段")
 
     def _cancel_proofread(self):
         """Cancel a running proofreading operation."""
@@ -466,7 +514,7 @@ class MainWindow(QMainWindow):
         self._progress.setVisible(False)
         self.cancel_btn.setVisible(False)
         self.proofread_btn.setEnabled(True)
-        self._status_text.setText("校对已取消")
+        self._set_status("校对已取消")
 
     def _on_proofread_done(self, errors):
         """Handle proofreading completion."""
@@ -492,17 +540,18 @@ class MainWindow(QMainWindow):
         msg = f"校对完成 — 发现 {len(errors)} 处疑似错误"
         if filtered_count > 0:
             msg += f" (用户词典过滤 {filtered_count} 处)"
-        self._status_text.setText(
+        self._set_status(
             msg if errors else "校对完成 — 未发现错误 ✓"
         )
 
     def _on_proofread_error(self, msg: str):
         """Handle proofreading error."""
+        log.error("校对失败: %s", msg)
         self._progress.setVisible(False)
         self.cancel_btn.setVisible(False)
         self.proofread_btn.setEnabled(True)
         QMessageBox.warning(self, "校对错误", msg)
-        self._status_text.setText("校对失败")
+        self._set_status("校对失败", kind="error")
 
     def _on_error_selected(self, idx: int):
         """Highlight an error in the text view."""
@@ -514,7 +563,7 @@ class MainWindow(QMainWindow):
         if self._correction_view.edit_mode:
             self._toggle_edit_mode()
         self._refresh_correction_view()
-        self._status_text.setText(
+        self._set_status(
             f"已接受 {len(self._error_list.get_accepted_errors())} 处修改"
         )
 
@@ -524,14 +573,14 @@ class MainWindow(QMainWindow):
             self._toggle_edit_mode()
         self._refresh_correction_view()
         remaining = len(self._error_list.get_remaining_errors())
-        self._status_text.setText(f"剩余 {remaining} 处待处理")
+        self._set_status(f"剩余 {remaining} 处待处理")
 
     def _on_accept_all(self):
         """Accept all remaining errors."""
         if self._correction_view.edit_mode:
             self._toggle_edit_mode()
         self._refresh_correction_view()
-        self._status_text.setText(
+        self._set_status(
             f"已接受 {len(self._error_list.get_accepted_errors())} 处修改"
         )
 
@@ -541,10 +590,10 @@ class MainWindow(QMainWindow):
         self._correction_view.set_edit_mode(enabled)
 
         if enabled:
-            self._status_text.setText("编辑模式 — 可直接修改文本，完成后点击保存")
+            self._set_status("编辑模式 — 可直接修改文本，完成后点击保存")
             self.edit_btn.setText("完成编辑")
         else:
-            self._status_text.setText("已返回校对模式")
+            self._set_status("已返回校对模式")
             self.edit_btn.setText("编辑")
             self._refresh_correction_view()
 
@@ -596,7 +645,7 @@ class MainWindow(QMainWindow):
                     handler.apply_corrections(accepted, markup=False)
                 handler.save(filepath)
                 note = f"共应用 {len(accepted)} 处修改。"
-            self._status_text.setText(f"已导出: {os.path.basename(filepath)}")
+            self._set_status(f"已导出: {os.path.basename(filepath)}")
             QMessageBox.information(
                 self, "导出成功", f"文档已保存到:\n{filepath}\n\n{note}"
             )
@@ -622,7 +671,7 @@ class MainWindow(QMainWindow):
             handler = self._fresh_handler()
             handler.apply_corrections(errors, track_changes=True)
             handler.save(filepath)
-            self._status_text.setText(f"已导出修订版: {os.path.basename(filepath)}")
+            self._set_status(f"已导出修订版: {os.path.basename(filepath)}")
             QMessageBox.information(
                 self, "导出成功",
                 f"已保存 Word 修订版:\n{filepath}\n\n"
@@ -650,7 +699,7 @@ class MainWindow(QMainWindow):
             handler = self._fresh_handler()
             handler.apply_corrections(errors, markup=True)
             handler.save(filepath)
-            self._status_text.setText(f"已导出标记版: {os.path.basename(filepath)}")
+            self._set_status(f"已导出标记版: {os.path.basename(filepath)}")
         except Exception as e:
             QMessageBox.critical(self, "导出失败", str(e))
 
@@ -678,7 +727,7 @@ class MainWindow(QMainWindow):
                 filepath, os.path.basename(self._docx_handler.filepath),
                 self._current_errors,
             )
-            self._status_text.setText(f"已导出报告: {os.path.basename(filepath)}")
+            self._set_status(f"已导出报告: {os.path.basename(filepath)}")
             QMessageBox.information(self, "导出成功", f"报告已保存到:\n{filepath}")
         except Exception as e:
             QMessageBox.critical(self, "导出失败", str(e))
@@ -730,7 +779,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 continue
         dlg.setValue(len(files))
-        self._status_text.setText(
+        self._set_status(
             f"批量校对完成 — {done}/{len(files)} 个文件，共 {total_errors} 处修订"
         )
         QMessageBox.information(
@@ -768,12 +817,21 @@ class MainWindow(QMainWindow):
             return
 
         if ctrl and key == Qt.Key.Key_Z:
-            # Ctrl+Z: undo last ignore
-            if self._proofread_done:
-                idx = self._error_list.undo_last_ignore()
-                if idx is not None:
-                    self._on_error_ignored(idx)
+            # Ctrl+Z: undo the most recent accept or ignore
+            if self._proofread_done and not self._correction_view.edit_mode:
+                result = self._error_list.undo_last()
+                if result is not None:
+                    action, _ = result
                     self._refresh_correction_view()
+                    label = "接受" if action == "accept" else "忽略"
+                    self._set_status(f"已撤销一次「{label}」")
+            return
+
+        if ctrl and key in (Qt.Key.Key_Equal, Qt.Key.Key_Plus):
+            self._correction_view.zoom_in()
+            return
+        if ctrl and key == Qt.Key.Key_Minus:
+            self._correction_view.zoom_out()
             return
 
         if key == Qt.Key.Key_Escape:
@@ -839,7 +897,7 @@ class MainWindow(QMainWindow):
             from docproof.config import MODELS
             key = self._engine_manager.current_model_key
             name = MODELS[key]['name'] if key else '未知'
-            self._status_text.setText(f"已切换模型: {name}")
+            self._set_status(f"已切换模型: {name}")
 
     def _refresh_model_combo(self):
         """Refresh the model selector combo box."""
@@ -883,20 +941,18 @@ class MainWindow(QMainWindow):
 
         # Show progress feedback during model loading
         def on_progress(msg: str):
-            self._status_text.setText(msg)
+            self._set_status(msg)
             QApplication.processEvents()
 
-        self._status_text.setText(f"正在加载: {info['name']}...")
+        self._set_status(f"正在加载: {info['name']}...")
         QApplication.processEvents()
 
         # Try to load the selected model
         ok, msg = self._engine_manager.load(key, progress_callback=on_progress)
         if ok:
-            self._status_text.setText(f"已切换模型: {info['name']}")
-            self._status_text.setStyleSheet("color: #16A34A; font-weight: bold;")
+            self._set_status(f"已切换模型: {info['name']}", kind="ok")
         else:
-            self._status_text.setText(f"切换失败: {msg.split(chr(10))[0]}")
-            self._status_text.setStyleSheet("color: #DC2626;")
+            self._set_status(f"切换失败: {msg.split(chr(10))[0]}", kind="error")
             # Revert combo selection
             self._refresh_model_combo()
 
