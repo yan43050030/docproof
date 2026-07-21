@@ -26,7 +26,7 @@ call build_env\Scripts\activate.bat
 
 echo [3/5] 安装依赖...
 pip install --upgrade pip
-pip install PySide6 python-docx kenlm pycorrector jieba pypinyin loguru tqdm pyinstaller
+pip install PySide6 python-docx kenlm pycorrector jieba pypinyin loguru tqdm six pyinstaller
 pip install torch transformers --index-url https://download.pytorch.org/whl/cpu
 
 echo [4/5] 构建便携版（含 MacBERT 引擎支持）...
@@ -69,6 +69,7 @@ pyinstaller --noconfirm ^
     --hidden-import="torch.nn" ^
     --hidden-import="loguru" ^
     --hidden-import="tqdm" ^
+    --hidden-import="six" ^
     --collect-all="pycorrector" ^
     docproof\__main__.py
 

@@ -29,7 +29,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install PySide6 python-docx kenlm jieba pypinyin loguru
+          pip install PySide6 python-docx kenlm jieba pypinyin loguru tqdm six
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install transformers
           pip install pyinstaller
@@ -72,6 +72,7 @@ jobs:
             --hidden-import="torch.nn" `
             --hidden-import="loguru" `
             --hidden-import="tqdm" `
+            --hidden-import="six" `
             --collect-all="pycorrector" `
             docproof/__main__.py
 

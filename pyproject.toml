@@ -12,6 +12,7 @@ dependencies = [
     "pypinyin>=0.44.0",
     "loguru>=0.6.0",
     "tqdm>=4.62.0",
+    "six>=1.16.0",
 ]
 
 [project.optional-dependencies]
@@ -60,6 +61,7 @@ hidden_imports = [
     "jieba",
     "loguru",
     "tqdm",
+    "six",
 ]
 exclude_modules = [
     "torch",
