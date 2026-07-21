@@ -35,6 +35,8 @@ jobs:
           pip install pyinstaller
 
       - name: Run tests
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: |
           pip install pytest
           python -m pytest tests/ -v
@@ -109,4 +111,93 @@ jobs:
           tag_name: ${{ github.event.inputs.tag != '' && github.event.inputs.tag || github.ref_name }}
           name: DocProof ${{ github.event.inputs.tag != '' && github.event.inputs.tag || github.ref_name }}
           files: DocProof-windows-portable.zip
+          generate_release_notes: true
+
+  # ---- macOS / Linux portable builds ----
+  build-unix:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            label: macos
+          - os: ubuntu-latest
+            label: linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install PySide6 python-docx kenlm jieba pypinyin loguru
+          pip install torch transformers --index-url https://download.pytorch.org/whl/cpu
+          pip install pyinstaller
+
+      - name: Run tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          pip install pytest
+          python -m pytest tests/ -v
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller --noconfirm \
+            --name="DocProof" \
+            --windowed \
+            --onedir \
+            --add-data="third_party/pycorrector/pycorrector:pycorrector" \
+            --add-data="models:models" \
+            --hidden-import="pycorrector" \
+            --hidden-import="pycorrector.macbert" \
+            --hidden-import="pycorrector.macbert.macbert_corrector" \
+            --hidden-import="pycorrector.corrector" \
+            --hidden-import="pycorrector.detector" \
+            --hidden-import="pycorrector.proper_corrector" \
+            --hidden-import="pycorrector.utils" \
+            --hidden-import="pycorrector.utils.text_utils" \
+            --hidden-import="pycorrector.utils.tokenizer" \
+            --hidden-import="pycorrector.utils.get_file" \
+            --hidden-import="pycorrector.utils.error_utils" \
+            --hidden-import="kenlm" \
+            --hidden-import="pypinyin" \
+            --hidden-import="jieba" \
+            --hidden-import="loguru" \
+            --hidden-import="tqdm" \
+            --collect-all="pycorrector" \
+            docproof/__main__.py
+
+      - name: Create portable package
+        run: |
+          cd dist
+          cat > DocProof/使用说明.txt <<'EOF'
+          DocProof 便携版
+          ================
+          Kenlm 模型下载后放入 models/ 目录：
+            标准(141MB): https://github.com/shibing624/pycorrector/releases/download/1.0.0/people2014corpus_chars.klm
+          MacBERT 引擎首次使用会自动下载模型 (~400MB)。
+          也可用命令行：./DocProof/DocProof --batch <目录>
+          EOF
+          tar -czf ../DocProof-${{ matrix.label }}-portable.tar.gz DocProof
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DocProof-${{ matrix.label }}-portable
+          path: DocProof-${{ matrix.label }}-portable.tar.gz
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag != '' && github.event.inputs.tag || github.ref_name }}
+          name: DocProof ${{ github.event.inputs.tag != '' && github.event.inputs.tag || github.ref_name }}
+          files: DocProof-${{ matrix.label }}-portable.tar.gz
           generate_release_notes: true
