@@ -39,7 +39,7 @@ class SettingsDialog(QDialog):
         self._engine_manager = engine_manager
         self._settings = settings
         self.setWindowTitle("设置")
-        self.setMinimumSize(560, 520)
+        self.setMinimumSize(580, 600)
         self.setModal(True)
         self._setup_ui()
 
@@ -57,14 +57,16 @@ class SettingsDialog(QDialog):
         model_layout.addWidget(desc)
 
         self.model_list = QListWidget()
-        self.model_list.setMinimumHeight(140)
+        self.model_list.setMinimumHeight(190)
+        self.model_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.model_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.model_list.setStyleSheet("""
             QListWidget {
                 border: 1px solid #DDD;
                 border-radius: 4px;
                 background: #FAFAFA;
             }
-            QListWidget::item { padding: 8px 12px; }
+            QListWidget::item { padding: 10px 14px; }
             QListWidget::item:selected { background: #EFF6FF; color: black; }
         """)
         self._refresh_model_list()
