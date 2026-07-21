@@ -65,20 +65,28 @@ def _make_handler(filepath: str):
 class ProofreadWorker(QThread):
     """Background thread for running proofreading."""
 
-    finished = Signal(list)  # list of ErrorItem
+    finished = Signal(list)  # final list of ErrorItem (filtered)
+    partial = Signal(list)   # cumulative spelling errors so far (filtered)
     error = Signal(str)  # error message
     progress = Signal(str)  # progress message
     progress_pct = Signal(int, int)  # (done, total) for a determinate bar
 
-    def __init__(self, engine_manager: EngineManager, text: str, parent=None):
+    def __init__(self, engine_manager: EngineManager, text: str,
+                 user_dict=None, parent=None):
         super().__init__(parent)
         self._engine_manager = engine_manager
         self._text = text
+        self._user_dict = user_dict
         self._should_stop = False
 
     def stop(self):
         """Request cancellation."""
         self._should_stop = True
+
+    def _filter(self, errors: list) -> list:
+        if self._user_dict is None:
+            return errors
+        return self._user_dict.filter_errors(errors)
 
     def run(self):
         try:
@@ -91,13 +99,25 @@ class ProofreadWorker(QThread):
                 self._text,
                 progress=lambda d, t: self.progress_pct.emit(d, t),
                 should_stop=lambda: self._should_stop,
+                on_batch=lambda errs: self.partial.emit(self._filter(errs)),
             )
             if self._should_stop:
                 return
-            self.finished.emit(errors)
+            self.finished.emit(self._filter(errors))
         except Exception as e:
             if not self._should_stop:
                 self.error.emit(str(e))
+
+
+class _WarmupThread(QThread):
+    """Runs engine warmup off the UI thread."""
+
+    def __init__(self, engine_manager: EngineManager, parent=None):
+        super().__init__(parent)
+        self._engine_manager = engine_manager
+
+    def run(self):
+        self._engine_manager.warmup()
 
 
 class MainWindow(QMainWindow):
@@ -110,7 +130,9 @@ class MainWindow(QMainWindow):
         self._worker: ProofreadWorker | None = None
         self._proofread_done = False
         self._current_errors: list = []
+        self._proofread_text = ""
         self._user_dict = UserDict()
+        self._warmup_thread: _WarmupThread | None = None
         self._recent_files: list[str] = []
         self._recent_menu = None
         self._load_recent_files()
@@ -124,6 +146,7 @@ class MainWindow(QMainWindow):
             han_space=bool(self._settings.get("rule_han_space", True)),
             repeat_punct=bool(self._settings.get("rule_repeat_punct", True)),
         )
+        self._engine_manager.set_parallel(bool(self._settings.get("parallel_enabled", False)))
 
         self.setWindowTitle(APP_NAME)
         self.setMinimumSize(1000, 700)
@@ -135,6 +158,14 @@ class MainWindow(QMainWindow):
         self._setup_statusbar()
         self._update_title()
         self._restore_geometry()
+        self._start_warmup()
+
+    def _start_warmup(self):
+        """Warm up the engine in the background so the first proofread is fast."""
+        if not self._engine_manager.is_loaded:
+            return
+        self._warmup_thread = _WarmupThread(self._engine_manager)
+        self._warmup_thread.start()
 
     # ---- UI Setup ----
 
@@ -397,6 +428,8 @@ class MainWindow(QMainWindow):
         if self._worker is not None and self._worker.isRunning():
             self._worker.stop()
             self._worker.wait(5000)
+        if self._warmup_thread is not None and self._warmup_thread.isRunning():
+            self._warmup_thread.wait(3000)
         event.accept()
 
     def _restore_geometry(self):
@@ -503,14 +536,23 @@ class MainWindow(QMainWindow):
         self._set_status("正在校对...")
 
         text = self._docx_handler.get_full_text()
+        self._proofread_text = text
 
         self._progress.setMaximum(0)  # start indeterminate until first tick
-        self._worker = ProofreadWorker(self._engine_manager, text)
+        self._worker = ProofreadWorker(self._engine_manager, text,
+                                       user_dict=self._user_dict)
         self._worker.finished.connect(self._on_proofread_done)
+        self._worker.partial.connect(self._on_proofread_partial)
         self._worker.error.connect(self._on_proofread_error)
         self._worker.progress.connect(lambda msg: self._set_status(msg))
         self._worker.progress_pct.connect(self._on_proofread_progress)
         self._worker.start()
+
+    def _on_proofread_partial(self, errors: list):
+        """Stream in errors as batches complete, so long documents show
+        results progressively instead of only at the end."""
+        self._correction_view.add_errors(self._proofread_text, errors)
+        self._error_list.add_errors(errors, full_text=self._proofread_text)
 
     def _on_proofread_progress(self, done: int, total: int):
         """Update the progress bar with a real percentage."""
@@ -530,7 +572,8 @@ class MainWindow(QMainWindow):
         self._set_status("校对已取消")
 
     def _on_proofread_done(self, errors):
-        """Handle proofreading completion."""
+        """Handle proofreading completion. Errors are already filtered through
+        the user dictionary by the worker (so streaming stayed consistent)."""
         self._progress.setVisible(False)
         self.cancel_btn.setVisible(False)
         self.proofread_btn.setEnabled(True)
@@ -539,22 +582,15 @@ class MainWindow(QMainWindow):
         self.edit_btn.setChecked(False)
         self._proofread_done = True
 
-        # Filter through user dictionary
-        filtered_count = len(errors)
-        errors = self._user_dict.filter_errors(errors)
-        filtered_count -= len(errors)
-
         self._current_errors = errors
 
         text = self._docx_handler.get_full_text()
         self._correction_view.show_corrections(text, errors)
         self._error_list.set_errors(errors, full_text=text)
 
-        msg = f"校对完成 — 发现 {len(errors)} 处疑似错误"
-        if filtered_count > 0:
-            msg += f" (用户词典过滤 {filtered_count} 处)"
         self._set_status(
-            msg if errors else "校对完成 — 未发现错误 ✓"
+            f"校对完成 — 发现 {len(errors)} 处疑似错误"
+            if errors else "校对完成 — 未发现错误 ✓"
         )
 
     def _on_proofread_error(self, msg: str):

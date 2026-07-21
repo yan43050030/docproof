@@ -28,6 +28,7 @@ class EngineManager:
         self._rule_engine = RuleEngine()
         self._rule_check_enabled: bool = True
         self._fix_dict = FixDict()
+        self._parallel_enabled: bool = True
 
     # ---- configuration ----
 
@@ -59,8 +60,27 @@ class EngineManager:
     def fix_dict(self) -> FixDict:
         return self._fix_dict
 
-    def proofread(self, text: str, progress=None, should_stop=None
-                  ) -> list[ErrorItem]:
+    def warmup(self) -> None:
+        """Run a tiny correction to trigger lazy initialisation (jieba dict,
+        model graph) so the user's first real run isn't slow. Safe to call in a
+        background thread; never raises."""
+        try:
+            if self._engine is not None:
+                self._engine.correct("预热。")
+        except Exception:
+            pass
+
+    # Documents with at least this many lines may use the process pool. Kept
+    # high because each worker reloads the language model on startup, so small
+    # and medium documents are faster served serially.
+    _PARALLEL_MIN_LINES = 200
+    _BATCH = 20
+
+    def set_parallel(self, enabled: bool) -> None:
+        self._parallel_enabled = enabled
+
+    def proofread(self, text: str, progress=None, should_stop=None,
+                  on_batch=None) -> list[ErrorItem]:
         """Run the active engine plus the optional rule pass and merge results.
 
         Args:
@@ -68,27 +88,15 @@ class EngineManager:
             progress: optional callback ``progress(done_lines, total_lines)`` for
                 a real progress bar — text is processed in line batches.
             should_stop: optional callable returning True to abort early.
+            on_batch: optional callback ``on_batch(cumulative_spelling_errors)``
+                invoked after each batch, enabling streaming/incremental display.
         """
         if self._engine is None:
             raise RuntimeError("校对引擎未加载")
 
-        lines = text.split("\n")
-        total = len(lines)
-        errors: list[ErrorItem] = []
-        base = 0
-        batch = 20
-
-        for i in range(0, total, batch):
-            if should_stop is not None and should_stop():
-                return []
-            batch_text = "\n".join(lines[i:i + batch])
-            for e in self._engine.correct(batch_text):
-                e.start += base
-                e.end += base
-                errors.append(e)
-            base += len(batch_text) + 1  # +1 for the joining newline
-            if progress is not None:
-                progress(min(i + batch, total), total)
+        errors = self._detect_spelling(text, progress, should_stop, on_batch)
+        if should_stop is not None and should_stop():
+            return []
 
         if self._rule_check_enabled:
             errors = self._merge(errors, self._rule_engine.correct(text))
@@ -105,6 +113,81 @@ class EngineManager:
             errors.extend(fix_errors)
 
         errors.sort(key=lambda e: e.start)
+        return errors
+
+    # ---- spelling detection (serial / parallel) ----
+
+    def _build_chunks(self, text: str) -> list[tuple[int, str]]:
+        """Split text into (base_offset, batch_text) chunks of _BATCH lines."""
+        lines = text.split("\n")
+        chunks = []
+        base = 0
+        for i in range(0, len(lines), self._BATCH):
+            batch_text = "\n".join(lines[i:i + self._BATCH])
+            chunks.append((base, batch_text))
+            base += len(batch_text) + 1  # +1 for the joining newline
+        return chunks
+
+    def _is_kenlm(self) -> bool:
+        return (self._current_key is not None
+                and MODELS.get(self._current_key, {}).get("engine_type") == "kenlm")
+
+    def _detect_spelling(self, text, progress, should_stop, on_batch
+                         ) -> list[ErrorItem]:
+        chunks = self._build_chunks(text)
+        total = len(text.split("\n"))
+
+        if (self._parallel_enabled and self._is_kenlm()
+                and total >= self._PARALLEL_MIN_LINES
+                and getattr(self._engine, "model_path", None)):
+            try:
+                return self._detect_parallel(chunks, total, progress,
+                                             should_stop, on_batch)
+            except Exception:
+                pass  # any failure -> fall back to serial below
+
+        return self._detect_serial(chunks, total, progress, should_stop, on_batch)
+
+    def _detect_serial(self, chunks, total, progress, should_stop, on_batch
+                       ) -> list[ErrorItem]:
+        errors: list[ErrorItem] = []
+        done = 0
+        for base, batch_text in chunks:
+            if should_stop is not None and should_stop():
+                return errors
+            for e in self._engine.correct(batch_text):
+                e.start += base
+                e.end += base
+                errors.append(e)
+            done = min(done + self._BATCH, total)
+            if progress is not None:
+                progress(done, total)
+            if on_batch is not None:
+                on_batch(list(errors))
+        return errors
+
+    def _detect_parallel(self, chunks, total, progress, should_stop, on_batch
+                         ) -> list[ErrorItem]:
+        from concurrent.futures import ProcessPoolExecutor
+        from docproof.engine.parallel import _proofread_chunk, default_worker_count
+
+        model_path = self._engine.model_path
+        args = [(model_path, base, bt) for base, bt in chunks]
+        errors: list[ErrorItem] = []
+        done = 0
+        with ProcessPoolExecutor(max_workers=default_worker_count()) as ex:
+            # map preserves input order, so offsets and streaming stay correct.
+            for chunk_result in ex.map(_proofread_chunk, args):
+                if should_stop is not None and should_stop():
+                    break
+                for err, corr, pos in chunk_result:
+                    errors.append(ErrorItem(err, corr, pos, pos + len(err),
+                                            category="spelling", source="kenlm"))
+                done = min(done + self._BATCH, total)
+                if progress is not None:
+                    progress(done, total)
+                if on_batch is not None:
+                    on_batch(list(errors))
         return errors
 
     @staticmethod

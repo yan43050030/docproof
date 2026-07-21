@@ -138,6 +138,15 @@ class SettingsDialog(QDialog):
         self.rule_repeat = _sub("rule_repeat_punct", "重复标点（如 。。 → 。）")
         self.rule_check.toggled.connect(self._sync_rule_subs)
 
+        self.parallel_check = QCheckBox("多核并行（仅超大文档、Kenlm 模型）")
+        par = bool(self._settings.get("parallel_enabled", False)) if self._settings else False
+        self.parallel_check.setChecked(par)
+        self.parallel_check.toggled.connect(self._on_parallel_toggled)
+        opt_layout.addWidget(self.parallel_check)
+        par_hint = QLabel("每个进程需重新加载模型，仅超长文档（>200段）受益。")
+        par_hint.setStyleSheet("color:#888; font-size:12px;")
+        opt_layout.addWidget(par_hint)
+
         layout.addWidget(opt_group)
 
         # ---- Model directories ----
@@ -179,6 +188,11 @@ class SettingsDialog(QDialog):
         self._engine_manager.set_rule_options(**{mapping[key]: checked})
         if self._settings:
             self._settings.set(key, checked)
+
+    def _on_parallel_toggled(self, checked: bool):
+        self._engine_manager.set_parallel(checked)
+        if self._settings:
+            self._settings.set("parallel_enabled", checked)
 
     def _refresh_model_list(self):
         """Refresh the model list showing status of each model."""

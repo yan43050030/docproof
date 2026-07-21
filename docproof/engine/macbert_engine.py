@@ -89,33 +89,52 @@ class MacBertEngine(BaseEngine):
     def correct(self, text: str) -> list[ErrorItem]:
         """Run MacBERT proofreading on text.
 
-        Splits by newlines before correction to avoid a known issue
-        where MacBERT's tokenizer struggles with multi-line input.
+        Splits into per-line chunks (bounded by BERT's 512-token limit) and
+        runs them through a single batched inference call when the corrector
+        exposes ``correct_batch`` — much faster on CPU than one call per line.
         """
         if not self._loaded:
             raise RuntimeError("Engine not loaded. Call load() first.")
 
-        lines = text.split("\n")
-        all_errors = []
+        # Build (global_base_offset, chunk_text) for every non-empty chunk.
+        pieces: list[tuple[int, str]] = []
         offset = 0
-
-        for line in lines:
+        for line in text.split("\n"):
             if line.strip():
-                # Long lines are chunked to stay under BERT's 512-token limit.
                 for chunk_offset, chunk in _split_into_chunks(line):
-                    if not chunk.strip():
-                        continue
-                    result = self._corrector.correct(chunk, threshold=self._threshold)
-                    base = offset + chunk_offset
-                    for error_word, correct_word, position in result.get("errors", []):
-                        all_errors.append(ErrorItem(
-                            error=error_word,
-                            correct=correct_word,
-                            start=base + position,
-                            end=base + position + len(error_word),
-                            category="spelling",
-                            source="macbert",
-                        ))
+                    if chunk.strip():
+                        pieces.append((offset + chunk_offset, chunk))
             offset += len(line) + 1  # +1 for the \n
 
+        if not pieces:
+            return []
+
+        results = self._run(pieces)
+
+        all_errors = []
+        for (base, _chunk), result in zip(pieces, results):
+            for error_word, correct_word, position in result.get("errors", []):
+                all_errors.append(ErrorItem(
+                    error=error_word,
+                    correct=correct_word,
+                    start=base + position,
+                    end=base + position + len(error_word),
+                    category="spelling",
+                    source="macbert",
+                ))
         return all_errors
+
+    def _run(self, pieces: list[tuple[int, str]]) -> list[dict]:
+        """Correct all chunk texts, using batched inference when available."""
+        texts = [c for _, c in pieces]
+        if hasattr(self._corrector, "correct_batch"):
+            try:
+                return list(self._corrector.correct_batch(
+                    texts, threshold=self._threshold))
+            except TypeError:
+                # Older signature without a threshold kwarg.
+                return list(self._corrector.correct_batch(texts))
+            except Exception:
+                pass  # fall back to per-chunk below
+        return [self._corrector.correct(t, threshold=self._threshold)
+                for t in texts]
