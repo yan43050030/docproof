@@ -22,6 +22,7 @@ DEFAULTS: dict = {
     "rule_han_space": True,     # 汉字间空格检查
     "rule_repeat_punct": True,  # 重复标点检查
     "parallel_enabled": False,  # 多核并行（仅超大文档受益；进程启动需重载模型）
+    "theme": "light",           # system | light | dark
     "window_geometry": None,  # base64 QByteArray hex, optional
 }
 

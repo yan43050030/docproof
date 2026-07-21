@@ -160,6 +160,15 @@ class MainWindow(QMainWindow):
         self._restore_geometry()
         self._start_warmup()
 
+    def _set_theme(self, mode: str) -> None:
+        """Switch the application theme and remember the choice."""
+        from docproof.ui.theme import apply_theme
+        app = QApplication.instance()
+        if app is not None:
+            apply_theme(app, mode)
+        self._settings.set("theme", mode)
+        self._set_status(f"已切换主题：{ {'system':'跟随系统','light':'浅色','dark':'深色'}[mode] }")
+
     def _start_warmup(self):
         """Warm up the engine in the background so the first proofread is fast."""
         if not self._engine_manager.is_loaded:
@@ -224,6 +233,28 @@ class MainWindow(QMainWindow):
         fix_action = QAction("编辑强制纠正词典...", self)
         fix_action.triggered.connect(self._edit_fix_dict)
         tools_menu.addAction(fix_action)
+
+        # View menu (theme + zoom)
+        view_menu = menu_bar.addMenu("视图(&V)")
+        theme_menu = view_menu.addMenu("主题")
+        from PySide6.QtGui import QActionGroup
+        self._theme_group = QActionGroup(self)
+        current_theme = self._settings.get("theme", "light")
+        for label, mode in (("跟随系统", "system"), ("浅色", "light"), ("深色", "dark")):
+            act = QAction(label, self, checkable=True)
+            act.setChecked(mode == current_theme)
+            act.triggered.connect(lambda _=False, m=mode: self._set_theme(m))
+            self._theme_group.addAction(act)
+            theme_menu.addAction(act)
+        view_menu.addSeparator()
+        zoom_in = QAction("放大文本", self)
+        zoom_in.setShortcut("Ctrl++")
+        zoom_in.triggered.connect(lambda: self._correction_view.zoom_in())
+        view_menu.addAction(zoom_in)
+        zoom_out = QAction("缩小文本", self)
+        zoom_out.setShortcut("Ctrl+-")
+        zoom_out.triggered.connect(lambda: self._correction_view.zoom_out())
+        view_menu.addAction(zoom_out)
 
         help_menu = menu_bar.addMenu("帮助(&H)")
         about_action = QAction("关于 DocProof", self)

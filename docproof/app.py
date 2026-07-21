@@ -19,32 +19,11 @@ class DocProofApp:
         self._app = QApplication(sys.argv)
         self._app.setApplicationName(APP_NAME)
 
-        # Force light theme so text is visible regardless of system dark mode
-        self._app.setStyle("Fusion")
-        self._app.setStyleSheet("""
-            QWidget {
-                color: #1a1a1a;
-                background-color: #FFFFFF;
-            }
-            QMenuBar {
-                background-color: #F5F5F5;
-            }
-            QMenuBar::item:selected {
-                background-color: #E0E0E0;
-            }
-            QStatusBar {
-                background-color: #F5F5F5;
-            }
-            QToolBar {
-                background-color: #F8F9FA;
-            }
-            QToolTip {
-                background-color: #333;
-                color: white;
-                border: none;
-                padding: 4px;
-            }
-        """)
+        # Apply the saved theme (system / light / dark).
+        from docproof.settings_store import SettingsStore
+        from docproof.ui.theme import apply_theme
+        theme = SettingsStore().get("theme", "light")
+        apply_theme(self._app, theme)
 
         self._engine_manager = EngineManager()
         self._main_window: MainWindow | None = None

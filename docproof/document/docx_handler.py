@@ -16,11 +16,17 @@ if TYPE_CHECKING:
     from docx.document import Document as DocumentType
 
 from docx import Document
+from docx.oxml import parse_xml
+from docx.oxml.ns import qn
 from docx.table import Table
 from docx.text.paragraph import Paragraph
+from lxml import etree
 
-from docproof.document.position_mapper import PositionMapper
+from docproof.document.position_mapper import PositionMapper, paragraph_text
 from docproof.document import run_ops
+
+# Footnote entries that carry no real text (the separator rules).
+_SKIP_NOTE_TYPES = {"separator", "continuationSeparator"}
 
 
 @dataclass
@@ -60,6 +66,19 @@ def _iter_table_paragraphs(table: Table) -> Iterator[Paragraph]:
             yield from _iter_block_paragraphs(cell)
 
 
+def _iter_textbox_paragraphs(element) -> Iterator[Paragraph]:
+    """Yield paragraphs inside every text box (``w:txbxContent``) under element.
+
+    Text box content lives in the main document / header / footer element trees,
+    so edits to these paragraphs persist through a normal save.
+    """
+    if element is None:
+        return
+    for txbx in element.iter(qn("w:txbxContent")):
+        for p in txbx.findall(qn("w:p")):
+            yield Paragraph(p, None)
+
+
 class DocxHandler:
     """Handles .docx document reading, correction application, and writing."""
 
@@ -69,6 +88,9 @@ class DocxHandler:
         self._mapper = PositionMapper()
         self._paragraphs: list[Paragraph] = []
         self._result: CorrectionResult | None = None
+        # (part, parsed_root) for footnote/endnote parts that need their blob
+        # rewritten on save (python-docx keeps them as opaque blobs).
+        self._note_parts: list = []
 
     # ---- properties ----
 
@@ -97,9 +119,15 @@ class DocxHandler:
         self._mapper.build(self._paragraphs)
 
     def _collect_paragraphs(self) -> list[Paragraph]:
-        """Body (with tables) first, then each section's headers and footers."""
+        """Collect proofread-able paragraphs from every part of the document.
+
+        Order: body (with tables), body text boxes, then each section's headers
+        and footers (with their text boxes), then footnotes and endnotes.
+        """
+        self._note_parts = []
         paras: list[Paragraph] = []
         paras.extend(_iter_block_paragraphs(self._doc))
+        paras.extend(_iter_textbox_paragraphs(self._doc.element.body))
         for section in self._doc.sections:
             for hf in (
                 section.header, section.first_page_header, section.even_page_header,
@@ -108,6 +136,32 @@ class DocxHandler:
                 if hf is None or getattr(hf, "is_linked_to_previous", False):
                     continue
                 paras.extend(_iter_block_paragraphs(hf))
+                paras.extend(_iter_textbox_paragraphs(getattr(hf, "_element", None)))
+        paras.extend(self._collect_notes())
+        return paras
+
+    def _collect_notes(self) -> list[Paragraph]:
+        """Collect footnote/endnote paragraphs, registering their parts so edits
+        can be written back on save."""
+        paras: list[Paragraph] = []
+        try:
+            rels = list(self._doc.part.rels.values())
+        except Exception:
+            return paras
+        for rel in rels:
+            reltype = getattr(rel, "reltype", "")
+            if not (reltype.endswith("/footnotes") or reltype.endswith("/endnotes")):
+                continue
+            try:
+                root = parse_xml(rel.target_part.blob)
+            except Exception:
+                continue
+            for note in root:
+                if note.get(qn("w:type")) in _SKIP_NOTE_TYPES:
+                    continue
+                for p in note.findall(qn("w:p")):
+                    paras.append(Paragraph(p, None))
+            self._note_parts.append((rel.target_part, root))
         return paras
 
     def get_full_text(self) -> str:
@@ -181,20 +235,31 @@ class DocxHandler:
     # ---- saving ----
 
     def save(self, filepath: str) -> None:
-        """Save the document to a new file."""
+        """Save the document to a new file.
+
+        Footnote/endnote parts are opaque blobs in python-docx, so their edited
+        element trees are serialised back into the parts before saving.
+        """
         if not self._doc:
             raise RuntimeError("Document not loaded.")
+        for part, root in self._note_parts:
+            try:
+                part._blob = etree.tostring(
+                    root, xml_declaration=True, encoding="UTF-8", standalone=True
+                )
+            except Exception:
+                pass
         self._doc.save(filepath)
 
     def replace_full_text(self, new_text: str) -> None:
-        """Replace body text line-by-line (used by the free-form edit mode).
+        """Apply hand-edited full text back to the document (edit mode).
 
-        Only the collected paragraphs are rewritten, in order. Each line replaces
-        one paragraph's text while keeping the paragraph's style; the first run's
-        formatting is retained. Extra lines are appended as new body paragraphs.
+        When the paragraph structure is unchanged (the common case — the user
+        edited words, not line breaks), only paragraphs whose text actually
+        changed are rewritten, so every untouched paragraph keeps its full
+        formatting and every table/text box/header stays intact.
 
-        Note: this is a plain-text merge and does not preserve per-run formatting
-        or table layout — it is only used when the user hand-edits the full text.
+        If the number of lines changed, falls back to a plain body rewrite.
         """
         if not self._doc:
             raise RuntimeError("Document not loaded.")
@@ -202,9 +267,32 @@ class DocxHandler:
         new_lines = new_text.split("\n")
         paras = self._paragraphs
 
+        if len(new_lines) == len(paras):
+            for para, line in zip(paras, new_lines):
+                old = paragraph_text(para)
+                if old != line:
+                    self._set_paragraph_text(para, old, line)
+        else:
+            self._rewrite_body(new_lines)
+
+        self._paragraphs = self._collect_paragraphs()
+        self._mapper.build(self._paragraphs)
+
+    @staticmethod
+    def _set_paragraph_text(para, old: str, line: str) -> None:
+        """Replace a paragraph's whole text, keeping the first run's format."""
+        if not para.runs:
+            para.add_run(line)
+        else:
+            run_ops.replace_span(para, 0, len(old), line)
+
+    def _rewrite_body(self, new_lines: list[str]) -> None:
+        """Fallback plain-text rewrite over body paragraphs when the line count
+        changed (structure edits can't be mapped to the structured layout)."""
+        body_paras = list(self._doc.paragraphs)
         for i, line in enumerate(new_lines):
-            if i < len(paras):
-                para = paras[i]
+            if i < len(body_paras):
+                para = body_paras[i]
                 if para.runs:
                     para.runs[0].text = line
                     for run in para.runs[1:]:
@@ -213,11 +301,6 @@ class DocxHandler:
                     para.add_run(line)
             else:
                 self._doc.add_paragraph(line)
-
-        # Blank out any leftover paragraphs beyond the new text.
-        for para in paras[len(new_lines):]:
+        for para in body_paras[len(new_lines):]:
             for run in para.runs:
                 run.text = ""
-
-        self._paragraphs = self._collect_paragraphs()
-        self._mapper.build(self._paragraphs)

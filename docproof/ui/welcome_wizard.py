@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QTextEdit,
     QVBoxLayout,
@@ -80,7 +81,8 @@ class WelcomeWizard(QDialog):
         layout.addWidget(self.model_list)
 
         # Step 2: Download URL
-        step2 = QLabel("<b>步骤 2：复制下载地址，在浏览器或下载工具中下载</b>")
+        step2 = QLabel("<b>步骤 2：下载模型</b>　"
+                       "<span style='color:#666;'>可直接下载，或复制地址手动下载</span>")
         layout.addWidget(step2)
 
         url_layout = QHBoxLayout()
@@ -89,6 +91,15 @@ class WelcomeWizard(QDialog):
         self.url_display.setMaximumHeight(50)
         self.url_display.setPlaceholderText("请在上面选择一个模型...")
         url_layout.addWidget(self.url_display)
+
+        self.download_btn = QPushButton("直接下载")
+        self.download_btn.clicked.connect(self._start_download)
+        self.download_btn.setEnabled(False)
+        self.download_btn.setStyleSheet(
+            "QPushButton { background:#16A34A; color:white; padding:6px 12px;"
+            " border-radius:4px; font-weight:bold; }"
+            " QPushButton:disabled { background:#AAA; }")
+        url_layout.addWidget(self.download_btn)
 
         self.copy_btn = QPushButton("复制地址")
         self.copy_btn.clicked.connect(self._copy_url)
@@ -101,6 +112,12 @@ class WelcomeWizard(QDialog):
         url_layout.addWidget(self.open_btn)
 
         layout.addLayout(url_layout)
+
+        # Download progress (hidden until a download starts)
+        self.dl_progress = QProgressBar()
+        self.dl_progress.setVisible(False)
+        layout.addWidget(self.dl_progress)
+        self._dl_thread = None
 
         # Step 3: Target folder
         step3 = QLabel(
@@ -190,12 +207,74 @@ class WelcomeWizard(QDialog):
         self._selected_model = key
         self.copy_btn.setEnabled(True)
         self.open_btn.setEnabled(True)
+        # MacBERT has no direct file URL (it auto-downloads via transformers).
+        self.download_btn.setEnabled(bool(info.get("filename")))
 
         filename = info["filename"]
-        self.status_label.setText(
-            f"请下载文件: {filename} ({info['size_mb']}MB)\n"
-            f"下载后放入项目 models/ 目录"
+        if filename:
+            self.status_label.setText(
+                f"请下载文件: {filename} ({info['size_mb']}MB)\n"
+                f"可点「直接下载」，或复制地址手动下载后放入 models/ 目录"
+            )
+        else:
+            self.status_label.setText(
+                "该模型首次使用时会自动下载，无需手动操作。"
+            )
+
+    def _start_download(self):
+        """Download the selected model into the project models/ dir."""
+        if not self._selected_model:
+            return
+        info = MODELS[self._selected_model]
+        filename = info.get("filename")
+        if not filename:
+            return
+        dest = os.path.join(PROJECT_MODELS_DIR, filename)
+        if os.path.exists(dest):
+            self._check_models()
+            return
+
+        from docproof.downloader import DownloadThread
+        self.download_btn.setEnabled(False)
+        self.copy_btn.setEnabled(False)
+        self.dl_progress.setVisible(True)
+        self.dl_progress.setRange(0, 0)  # indeterminate until first bytes
+        self.status_label.setText(f"正在下载 {filename} ...")
+        self.status_label.setStyleSheet("color: #2563EB;")
+
+        self._dl_thread = DownloadThread(info["url"], dest, self)
+        self._dl_thread.progress.connect(self._on_download_progress)
+        self._dl_thread.finished_ok.connect(self._on_download_ok)
+        self._dl_thread.failed.connect(self._on_download_failed)
+        self._dl_thread.start()
+
+    def _on_download_progress(self, done: int, total: int):
+        if total > 0:
+            self.dl_progress.setRange(0, total)
+            self.dl_progress.setValue(done)
+            self.status_label.setText(
+                f"正在下载... {done/1048576:.1f} / {total/1048576:.1f} MB"
+            )
+
+    def _on_download_ok(self, dest: str):
+        self.dl_progress.setVisible(False)
+        self.download_btn.setEnabled(True)
+        self.copy_btn.setEnabled(True)
+        self.status_label.setText("下载完成 ✓")
+        self._check_models()
+
+    def _on_download_failed(self, msg: str):
+        self.dl_progress.setVisible(False)
+        self.download_btn.setEnabled(True)
+        self.copy_btn.setEnabled(True)
+        self.status_label.setStyleSheet("color: #DC2626;")
+        QMessageBox.warning(
+            self, "下载失败",
+            f"无法完成下载：\n{msg}\n\n"
+            "可改用「复制地址」在浏览器或其他工具下载，"
+            "或在另一台电脑下载后，把模型文件拷贝到 models/ 目录。"
         )
+        self.status_label.setText("下载失败，可改用手动方式（见提示）。")
 
     def _copy_url(self):
         clipboard = QApplication.clipboard()
@@ -210,6 +289,13 @@ class WelcomeWizard(QDialog):
     def _open_folder(self, path: str):
         os.makedirs(path, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def closeEvent(self, event):
+        """Stop an in-flight download before the dialog closes."""
+        if self._dl_thread is not None and self._dl_thread.isRunning():
+            self._dl_thread.stop()
+            self._dl_thread.wait(3000)
+        super().closeEvent(event)
 
     def _check_models(self):
         """Check if any model files are present and update UI."""
