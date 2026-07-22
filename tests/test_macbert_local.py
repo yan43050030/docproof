@@ -110,7 +110,7 @@ class TestMacBertDiagnosis:
         assert config.diagnose_macbert() is None
 
     def test_engine_receives_local_path(self, tmp_path, monkeypatch):
-        # engine_manager._load_macbert should build the engine with the local
+        # engine_manager._build_macbert should build the engine with the local
         # path when one is present.
         monkeypatch.setattr(config, "MODEL_SEARCH_DIRS", [str(tmp_path)])
         d = _make_macbert_dir(str(tmp_path))
@@ -129,7 +129,7 @@ class TestMacBertDiagnosis:
 
         from docproof.engine.engine_manager import EngineManager
         mgr = EngineManager()
-        mgr._load_macbert("macbert")
+        mgr._build_macbert("macbert")
         assert captured["path"] == d
 
 

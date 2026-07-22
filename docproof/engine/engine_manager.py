@@ -251,21 +251,21 @@ class EngineManager:
                     f"或使用 Kenlm 模型（无需额外依赖）。"
                 )
 
-        # Unload current engine
-        if self._engine:
-            self._engine.unload()
-
-        ok = False
-        msg = ""
-
+        # Build the new engine WITHOUT touching the current one first, so a
+        # failed switch leaves the working engine intact (previously the current
+        # engine was unloaded up-front, so a failed switch to a model with no
+        # file left the app with no usable engine and a stale current_key).
         if engine_type == ENGINE_TYPES["kenlm"]:
-            ok, msg = self._load_kenlm(model_key)
+            ok, msg, new_engine = self._build_kenlm(model_key)
         elif engine_type == ENGINE_TYPES["macbert"]:
-            ok, msg = self._load_macbert(model_key, progress_callback)
+            ok, msg, new_engine = self._build_macbert(model_key, progress_callback)
         else:
             return False, f"不支持的引擎类型: {engine_type}"
 
-        if ok:
+        if ok and new_engine is not None:
+            if self._engine is not None and self._engine is not new_engine:
+                self._engine.unload()
+            self._engine = new_engine
             self._current_key = model_key
             msg = f"已加载: {info['name']}"
 
@@ -286,30 +286,31 @@ class EngineManager:
 
     # ---- Internal ----
 
-    def _load_kenlm(self, model_key: str) -> tuple[bool, str]:
+    def _build_kenlm(self, model_key: str) -> tuple[bool, str, BaseEngine | None]:
+        """Build a Kenlm engine. Returns (ok, msg, engine) without side effects
+        on the currently-active engine."""
         model_path = get_model_path(model_key)
         if not model_path or not os.path.exists(model_path):
             return False, (
                 f"模型文件不存在。\n"
                 f"请下载 .klm 文件放入 models/ 目录:\n"
                 f"  {MODELS[model_key].get('url', '')}"
-            )
+            ), None
 
         engine = KenlmEngine(model_key=model_key)
         try:
             if engine.load():
-                self._engine = engine
-                return True, "ok"
-            return False, "模型加载失败"
+                return True, "ok", engine
+            return False, "模型加载失败", None
         except Exception as e:
-            return False, f"加载出错: {e}"
+            return False, f"加载出错: {e}", None
 
-    def _load_macbert(self, model_key: str,
-                      progress_callback=None) -> tuple[bool, str]:
+    def _build_macbert(self, model_key: str, progress_callback=None
+                       ) -> tuple[bool, str, BaseEngine | None]:
         try:
             from docproof.engine.macbert_engine import MacBertEngine
         except ImportError as e:
-            return False, f"导入 MacBERT 引擎失败: {e}"
+            return False, f"导入 MacBERT 引擎失败: {e}", None
 
         # Prefer a locally-placed model folder so users can run fully offline;
         # fall back to the HuggingFace repo id (auto-download) otherwise.
@@ -319,8 +320,7 @@ class EngineManager:
                                model_name_or_path=local_path)
         try:
             if engine.load(progress_callback=progress_callback):
-                self._engine = engine
-                return True, "ok"
-            return False, "MacBERT 模型加载失败"
+                return True, "ok", engine
+            return False, "MacBERT 模型加载失败", None
         except Exception as e:
-            return False, f"加载出错: {e}"
+            return False, f"加载出错: {e}", None

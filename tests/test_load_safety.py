@@ -68,7 +68,7 @@ class TestKenlmMissingModel:
 class TestManagerMissingModel:
     def test_load_missing_kenlm_is_clean(self, monkeypatch):
         import docproof.engine.engine_manager as em_mod
-        # get_model_path returns None -> _load_kenlm should report a clean error.
+        # get_model_path returns None -> _build_kenlm reports (via load) a clean error.
         monkeypatch.setattr(em_mod, "get_model_path", lambda k: None)
         mgr = em_mod.EngineManager()
         ok, msg = mgr.load("kenlm-large")

@@ -75,6 +75,11 @@ def init_config() -> None:
         os.environ["TRANSFORMERS_CACHE"] = _MACBERT_CACHE
     if "PYCORRECTOR_DATA_DIR" not in os.environ:
         os.environ["PYCORRECTOR_DATA_DIR"] = PROJECT_MODELS_DIR
+    # torch (MacBERT) and other native libs can each bundle an OpenMP runtime;
+    # loading a second one aborts with "OMP: Error #15". Allow duplicates so
+    # switching between MacBERT and Kenlm in one session stays stable.
+    if "KMP_DUPLICATE_LIB_OK" not in os.environ:
+        os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
     if os.path.isdir(_THIRD_PARTY) and _THIRD_PARTY not in sys.path:
         sys.path.insert(0, _THIRD_PARTY)
