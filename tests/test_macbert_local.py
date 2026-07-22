@@ -131,3 +131,34 @@ class TestMacBertDiagnosis:
         mgr = EngineManager()
         mgr._load_macbert("macbert")
         assert captured["path"] == d
+
+
+class TestBadTokenizerJson:
+    """config.json is fine (2KB) but another JSON file is an empty stub."""
+
+    def _snapshot(self, tmp_path):
+        snap = tmp_path / "macbert_cache" / "hub" \
+            / "models--shibing624--macbert4csc-base-chinese" / "snapshots" / "h2"
+        snap.mkdir(parents=True)
+        (snap / "config.json").write_text('{"model_type": "bert", "x": 1}')
+        (snap / "pytorch_model.bin").write_bytes(b"\x00" * 200_000)
+        (snap / "vocab.txt").write_text("的\n")
+        return snap
+
+    def test_empty_tokenizer_config_rejected_and_diagnosed(self, tmp_path, monkeypatch):
+        import docproof.config as config
+        monkeypatch.setattr(config, "MODEL_SEARCH_DIRS", [str(tmp_path)])
+        snap = self._snapshot(tmp_path)
+        (snap / "tokenizer_config.json").write_text("")  # empty stub
+        assert config.get_macbert_model_path() is None
+        diag = config.diagnose_macbert()
+        assert diag is not None and "tokenizer_config.json" in diag
+
+    def test_all_valid_is_usable(self, tmp_path, monkeypatch):
+        import docproof.config as config
+        monkeypatch.setattr(config, "MODEL_SEARCH_DIRS", [str(tmp_path)])
+        snap = self._snapshot(tmp_path)
+        (snap / "tokenizer_config.json").write_text('{"do_lower_case": true}')
+        (snap / "special_tokens_map.json").write_text('{"pad_token": "[PAD]"}')
+        assert config.get_macbert_model_path() == str(snap)
+        assert config.diagnose_macbert() is None

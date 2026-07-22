@@ -222,11 +222,39 @@ def _has_real_weights(path: str) -> bool:
     return False
 
 
+def _bad_json_files(path: str) -> list[str]:
+    """Return JSON files in ``path`` that exist but are empty or invalid.
+
+    transformers reads config.json AND tokenizer JSONs (tokenizer_config.json,
+    special_tokens_map.json, tokenizer.json, added_tokens.json, ...). Any one of
+    them being an empty/pointer stub triggers the
+    'Expecting value: line 1 column 1 (char 0)' crash, so all present JSON files
+    must be valid — not just config.json.
+    """
+    bad = []
+    try:
+        names = [f for f in os.listdir(path) if f.endswith(".json")]
+    except OSError:
+        return bad
+    for name in names:
+        if not _valid_json_file(os.path.join(path, name)):
+            bad.append(name)
+    return bad
+
+
 def _is_macbert_dir(path: str) -> bool:
-    """True if ``path`` holds a usable MacBERT model (valid config + real weights)."""
+    """True if ``path`` holds a usable MacBERT model.
+
+    Requires a valid config.json, real weights, and every present JSON file to
+    be valid (an empty tokenizer JSON would crash the loader).
+    """
     if not os.path.isdir(path):
         return False
-    return _valid_json_file(os.path.join(path, "config.json")) and _has_real_weights(path)
+    if not _valid_json_file(os.path.join(path, "config.json")):
+        return False
+    if not _has_real_weights(path):
+        return False
+    return not _bad_json_files(path)
 
 
 def get_macbert_model_path() -> str | None:
@@ -279,14 +307,23 @@ def diagnose_macbert() -> str | None:
     un-materialised pointer stubs (empty/invalid config.json, tiny weight files)
     — typically a HuggingFace Xet download that wasn't fully pulled.
     """
-    for snap in _macbert_snapshot_dirs():
-        cfg = os.path.join(snap, "config.json")
-        if not _valid_json_file(cfg):
-            return (f"检测到模型目录，但 config.json 为空或不是有效内容：\n  {cfg}\n"
-                    "这通常是用 HuggingFace Xet/agent 方式下载、文件未真正实体化所致。")
-        if not _has_real_weights(snap):
-            return (f"检测到模型目录，但权重文件缺失或过小（可能是指针文件）：\n  {snap}\n"
-                    "请确认 pytorch_model.bin 或 model.safetensors 是完整文件。")
+    # Look at every candidate model dir (explicit folders + cache snapshots).
+    candidates = list(_macbert_snapshot_dirs())
+    for d in MODEL_SEARCH_DIRS:
+        for name in ("macbert", "macbert4csc-base-chinese"):
+            cand = os.path.join(d, name)
+            if os.path.isdir(cand):
+                candidates.append(cand)
+
+    for d in candidates:
+        bad = _bad_json_files(d)
+        if bad:
+            return (f"模型目录中有 JSON 文件为空或损坏：{', '.join(bad)}\n  位置：{d}\n"
+                    "这些文件需为有效内容（常见于 Xet/部分下载工具未实体化文件）。"
+                    "请从 HuggingFace 重新下载这几个文件的实体版本覆盖。")
+        if not _has_real_weights(d):
+            return (f"模型目录中权重文件缺失或过小（可能是指针文件）：\n  {d}\n"
+                    "请确认 pytorch_model.bin 或 model.safetensors 是完整实体文件。")
     return None
 
 
