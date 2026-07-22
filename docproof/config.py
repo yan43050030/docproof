@@ -221,6 +221,20 @@ def _priority_keys() -> list[str]:
     return MODEL_PRIORITY + [k for k in MODELS if k not in MODEL_PRIORITY]
 
 
+def get_offline_model() -> str | None:
+    """Return the best model that can run *right now* with no network, or None.
+
+    Used for silent auto-load at startup: we must never auto-select a model that
+    would try (and fail) to download on a machine that is offline or blocked.
+    A model that only has its dependencies installed (e.g. MacBERT without its
+    weights cached) is intentionally excluded here.
+    """
+    for key in _priority_keys():
+        if is_model_ready_offline(key):
+            return key
+    return None
+
+
 def get_available_model() -> str | None:
     """Return the best usable model key, or None.
 

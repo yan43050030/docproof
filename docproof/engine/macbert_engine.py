@@ -74,9 +74,26 @@ class MacBertEngine(BaseEngine):
             ) from e
 
         if progress_callback:
-            progress_callback("正在加载 MacBERT 模型（首次使用需下载 ~400MB）...")
+            progress_callback("正在加载 MacBERT 模型（首次使用需联网下载 ~400MB）...")
 
-        self._corrector = MacBertCorrector()
+        try:
+            self._corrector = MacBertCorrector()
+        except Exception as e:
+            # Empty/partial config.json (offline or interrupted download) surfaces
+            # as a JSON error like "Expecting value: line 1 column 1 (char 0)".
+            msg = str(e)
+            if ("Expecting value" in msg or "JSONDecode" in msg
+                    or "Can't load" in msg or "Connection" in msg
+                    or "offline" in msg.lower() or "Max retries" in msg):
+                raise RuntimeError(
+                    "MacBERT 模型未下载或下载不完整。\n\n"
+                    "首次使用需联网从 HuggingFace 下载约 400MB 模型。请：\n"
+                    "  1. 连接网络后重试；或\n"
+                    "  2. 在另一台联网电脑下载后，把 models/macbert_cache 整个文件夹拷贝过来；或\n"
+                    "  3. 改用 Kenlm 统计模型（放入 .klm 文件，完全离线）。"
+                ) from e
+            raise
+
         self._loaded = True
 
         if progress_callback:

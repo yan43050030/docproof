@@ -32,6 +32,13 @@ class KenlmEngine(BaseEngine):
         if self._loaded:
             return True
 
+        # Check the model file first — no point importing pycorrector (or letting
+        # it fall back to a 2.95GB download) if the .klm file isn't present.
+        import os
+        model_path = self.model_path
+        if not model_path or not os.path.exists(model_path):
+            return False  # model not downloaded yet
+
         try:
             from pycorrector.corrector import Corrector
         except ImportError as e:
@@ -43,11 +50,31 @@ class KenlmEngine(BaseEngine):
                 f"2. 已安装所有依赖: pip install pypinyin loguru kenlm"
             ) from e
 
-        model_path = self.model_path
-        if not __import__("os").path.exists(model_path):
-            return False  # model not downloaded yet
-
         self._corrector = Corrector(language_model_path=model_path)
+
+        # Eagerly initialise the underlying detector so the language model is
+        # actually opened *now*. Otherwise pycorrector lazily initialises on the
+        # first correct() call and, if the model path is unusable, silently
+        # falls back to downloading the 2.95GB default model — which fails
+        # offline with a cryptic error. Failing here keeps the error clear and
+        # prevents that fallback. We also re-assert our path afterwards.
+        try:
+            self._corrector.correct("初始化")
+        except Exception as e:
+            self._corrector = None
+            raise RuntimeError(
+                f"语言模型无法加载：{model_path}\n"
+                f"文件可能损坏或不完整，请重新下载。\n\n原始错误: {e}"
+            ) from e
+
+        # Guard against pycorrector having swapped in its default model path.
+        actual = getattr(self._corrector, "language_model_path", model_path)
+        if actual != model_path:
+            self._corrector = None
+            raise RuntimeError(
+                f"语言模型路径异常（期望 {model_path}，实际 {actual}）。"
+            )
+
         self._loaded = True
         return True
 

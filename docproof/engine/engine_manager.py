@@ -9,6 +9,7 @@ from docproof.config import (
     MODELS,
     ENGINE_TYPES,
     get_available_model,
+    get_offline_model,
     get_model_path,
     check_macbert_fully_available,
 )
@@ -216,10 +217,17 @@ class EngineManager:
     # ---- Public API ----
 
     def auto_load(self) -> tuple[bool, str]:
-        """Try to load the best available model. Returns (success, message)."""
-        available = get_available_model()
+        """Silently load the best model that can run offline right now.
+
+        Only offline-ready models are auto-loaded — we never trigger a network
+        download on startup (that fails on offline/blocked machines and, for
+        MacBERT, crashes with a JSON error on a partial cache). If nothing is
+        ready, the app starts without an engine and the user picks one in
+        Settings, which is where any download is initiated explicitly.
+        """
+        available = get_offline_model()
         if available is None:
-            return False, "未找到任何语言模型，请先下载模型或安装 MacBERT 依赖。"
+            return False, "未找到可离线使用的语言模型，请在设置中选择并下载模型。"
         return self.load(available)
 
     def load(self, model_key: str,

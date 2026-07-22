@@ -20,6 +20,10 @@ _WORKER_CACHE: dict = {}
 
 
 def _get_corrector(model_path: str):
+    # Never construct with a missing path: pycorrector would fall back to
+    # downloading its 2.95GB default model, which fails offline.
+    if not model_path or not os.path.exists(model_path):
+        raise FileNotFoundError(f"model not found: {model_path}")
     corr = _WORKER_CACHE.get(model_path)
     if corr is None:
         # Make sure the bundled pycorrector is importable inside the worker.
