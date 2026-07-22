@@ -286,6 +286,20 @@ def get_macbert_model_path() -> str | None:
     return None
 
 
+def _has_xet_store() -> bool:
+    """True if a macbert_cache/xet directory with data exists — a sign that the
+    model was downloaded in HuggingFace Xet format and needs materialising."""
+    for d in MODEL_SEARCH_DIRS:
+        xet = os.path.join(d, "macbert_cache", "xet")
+        if os.path.isdir(xet):
+            try:
+                if any(os.scandir(xet)):
+                    return True
+            except OSError:
+                pass
+    return False
+
+
 def _macbert_snapshot_dirs() -> list[str]:
     """All snapshot directories that look like a MacBERT model (valid or not)."""
     out = []
@@ -317,11 +331,26 @@ def diagnose_macbert() -> str | None:
 
     for d in candidates:
         bad = _bad_json_files(d)
-        if bad:
-            return (f"模型目录中有 JSON 文件为空或损坏：{', '.join(bad)}\n  位置：{d}\n"
-                    "这些文件需为有效内容（常见于 Xet/部分下载工具未实体化文件）。"
-                    "请从 HuggingFace 重新下载这几个文件的实体版本覆盖。")
-        if not _has_real_weights(d):
+        weights_ok = _has_real_weights(d)
+        if bad or not weights_ok:
+            # If a Xet store holds the real bytes, the snapshot files are just
+            # pointers — the data exists but isn't materialised into real files.
+            if _has_xet_store():
+                return (
+                    "模型是以 HuggingFace Xet 格式下载的：真实数据在 macbert_cache/xet 里，"
+                    "但 snapshots 下的文件只是指针，程序无法直接读取。\n\n"
+                    "解决办法（任选其一）：\n"
+                    "  1. 把完整的【实体】模型文件放到 models/macbert/ 目录：\n"
+                    "     从 https://huggingface.co/shibing624/macbert4csc-base-chinese/tree/main\n"
+                    "     逐个下载 pytorch_model.bin(约400MB)、config.json、vocab.txt、\n"
+                    "     tokenizer_config.json、special_tokens_map.json；\n"
+                    "  2. 或用命令行禁用 Xet 重新下载：\n"
+                    "     set HF_HUB_DISABLE_XET=1 && huggingface-cli download \n"
+                    "     shibing624/macbert4csc-base-chinese --local-dir 路径/models/macbert"
+                )
+            if bad:
+                return (f"模型目录中有 JSON 文件为空或损坏：{', '.join(bad)}\n  位置：{d}\n"
+                        "请从 HuggingFace 重新下载这些文件的实体版本覆盖。")
             return (f"模型目录中权重文件缺失或过小（可能是指针文件）：\n  {d}\n"
                     "请确认 pytorch_model.bin 或 model.safetensors 是完整实体文件。")
     return None
