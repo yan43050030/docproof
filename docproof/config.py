@@ -223,21 +223,27 @@ def _has_real_weights(path: str) -> bool:
 
 
 def _bad_json_files(path: str) -> list[str]:
-    """Return JSON files in ``path`` that exist but are empty or invalid.
+    """Return JSON files in ``path`` that are broken (empty, parse error, stub).
 
-    transformers reads config.json AND tokenizer JSONs (tokenizer_config.json,
-    special_tokens_map.json, tokenizer.json, added_tokens.json, ...). Any one of
-    them being an empty/pointer stub triggers the
-    'Expecting value: line 1 column 1 (char 0)' crash, so all present JSON files
-    must be valid — not just config.json.
+    Rejects files whose content is clearly not a usable JSON file — size 0,
+    unparseable text (XSym stubs), I/O errors — but *accepts* empty objects
+    ``{}`` because that is a perfectly valid added_tokens.json (no extra tokens).
     """
+    import json as _json
     bad = []
     try:
         names = [f for f in os.listdir(path) if f.endswith(".json")]
     except OSError:
         return bad
     for name in names:
-        if not _valid_json_file(os.path.join(path, name)):
+        fp = os.path.join(path, name)
+        try:
+            if not os.path.isfile(fp) or os.path.getsize(fp) == 0:
+                bad.append(name)
+                continue
+            with open(fp, "r", encoding="utf-8") as f:
+                _json.load(f)
+        except (OSError, ValueError):
             bad.append(name)
     return bad
 
