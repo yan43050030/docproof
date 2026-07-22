@@ -16,8 +16,10 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QScrollArea,
     QSlider,
     QVBoxLayout,
+    QWidget,
 )
 
 from docproof.config import (
@@ -39,14 +41,21 @@ class SettingsDialog(QDialog):
         self._engine_manager = engine_manager
         self._settings = settings
         self.setWindowTitle("设置")
-        self.setMinimumSize(580, 600)
+        self.setMinimumSize(560, 500)
+        self.resize(580, 600)
         self.setModal(True)
         self._setup_ui()
 
     def _setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setSpacing(16)
-        layout.setContentsMargins(20, 20, 20, 20)
+        # Scroll area wraps everything so the dialog works at any size.
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setSpacing(10)
+        layout.setContentsMargins(16, 16, 16, 16)
 
         # ---- Model Selection ----
         model_group = QGroupBox("语言模型选择")
@@ -57,7 +66,8 @@ class SettingsDialog(QDialog):
         model_layout.addWidget(desc)
 
         self.model_list = QListWidget()
-        self.model_list.setMinimumHeight(190)
+        self.model_list.setMinimumHeight(160)
+        self.model_list.setMaximumHeight(240)
         self.model_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.model_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.model_list.setStyleSheet("""
@@ -66,7 +76,7 @@ class SettingsDialog(QDialog):
                 border-radius: 4px;
                 background: #FAFAFA;
             }
-            QListWidget::item { padding: 10px 14px; }
+            QListWidget::item { padding: 8px 12px; }
             QListWidget::item:selected { background: #EFF6FF; color: black; }
         """)
         self._refresh_model_list()
@@ -164,6 +174,12 @@ class SettingsDialog(QDialog):
         button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
         button_box.accepted.connect(self.accept)
         layout.addWidget(button_box)
+
+        # Put content in scroll area, scroll area in dialog.
+        scroll.setWidget(content)
+        dlg_layout = QVBoxLayout(self)
+        dlg_layout.setContentsMargins(0, 0, 0, 0)
+        dlg_layout.addWidget(scroll)
 
     def _on_threshold_changed(self, value: int):
         thr = value / 100.0
