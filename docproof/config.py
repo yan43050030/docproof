@@ -190,19 +190,43 @@ def get_model_path(model_key: str) -> str | None:
 
 # Weight and config filenames that a usable local MacBERT folder must contain.
 _MACBERT_WEIGHTS = ("pytorch_model.bin", "model.safetensors")
+# A materialised weight file is far larger than this; anything smaller is almost
+# certainly an un-materialised pointer stub (e.g. a HuggingFace Xet pointer).
+_MIN_WEIGHT_BYTES = 100 * 1024
+
+
+def _valid_json_file(path: str) -> bool:
+    """True if ``path`` exists and contains a non-empty JSON object.
+
+    Guards against un-materialised pointer/stub files (Xet, LFS pointers,
+    interrupted downloads) whose config.json is empty or not real JSON — those
+    are exactly what make transformers raise
+    'Expecting value: line 1 column 1 (char 0)'.
+    """
+    import json
+    try:
+        if not os.path.isfile(path) or os.path.getsize(path) == 0:
+            return False
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return isinstance(data, dict) and bool(data)
+    except (OSError, ValueError):
+        return False
+
+
+def _has_real_weights(path: str) -> bool:
+    for w in _MACBERT_WEIGHTS:
+        wp = os.path.join(path, w)
+        if os.path.isfile(wp) and os.path.getsize(wp) >= _MIN_WEIGHT_BYTES:
+            return True
+    return False
 
 
 def _is_macbert_dir(path: str) -> bool:
-    """True if ``path`` is a directory with a non-empty config.json and weights."""
+    """True if ``path`` holds a usable MacBERT model (valid config + real weights)."""
     if not os.path.isdir(path):
         return False
-    cfg = os.path.join(path, "config.json")
-    if not (os.path.isfile(cfg) and os.path.getsize(cfg) > 0):
-        return False
-    return any(
-        os.path.isfile(os.path.join(path, w)) and os.path.getsize(os.path.join(path, w)) > 0
-        for w in _MACBERT_WEIGHTS
-    )
+    return _valid_json_file(os.path.join(path, "config.json")) and _has_real_weights(path)
 
 
 def get_macbert_model_path() -> str | None:
@@ -231,6 +255,38 @@ def get_macbert_model_path() -> str | None:
             if os.path.basename(os.path.dirname(root)) == "snapshots" \
                     and _is_macbert_dir(root):
                 return root
+    return None
+
+
+def _macbert_snapshot_dirs() -> list[str]:
+    """All snapshot directories that look like a MacBERT model (valid or not)."""
+    out = []
+    for d in MODEL_SEARCH_DIRS:
+        cache = os.path.join(d, "macbert_cache")
+        if not os.path.isdir(cache):
+            continue
+        for root, _dirs, files in os.walk(cache):
+            if os.path.basename(os.path.dirname(root)) == "snapshots" \
+                    and "config.json" in files:
+                out.append(root)
+    return out
+
+
+def diagnose_macbert() -> str | None:
+    """Explain why a present-but-unusable MacBERT model can't load, or None.
+
+    Detects the common failure where the model was downloaded but its files are
+    un-materialised pointer stubs (empty/invalid config.json, tiny weight files)
+    — typically a HuggingFace Xet download that wasn't fully pulled.
+    """
+    for snap in _macbert_snapshot_dirs():
+        cfg = os.path.join(snap, "config.json")
+        if not _valid_json_file(cfg):
+            return (f"检测到模型目录，但 config.json 为空或不是有效内容：\n  {cfg}\n"
+                    "这通常是用 HuggingFace Xet/agent 方式下载、文件未真正实体化所致。")
+        if not _has_real_weights(snap):
+            return (f"检测到模型目录，但权重文件缺失或过小（可能是指针文件）：\n  {snap}\n"
+                    "请确认 pytorch_model.bin 或 model.safetensors 是完整文件。")
     return None
 
 

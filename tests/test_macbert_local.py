@@ -20,7 +20,7 @@ def _make_macbert_dir(root: str, name: str = "macbert",
     with open(os.path.join(d, "config.json"), "w", encoding="utf-8") as f:
         f.write(config_content)
     with open(os.path.join(d, weight), "wb") as f:
-        f.write(b"\x00" * 128)
+        f.write(b"\x00" * 200_000)
     with open(os.path.join(d, "vocab.txt"), "w", encoding="utf-8") as f:
         f.write("的\n")
     return d
@@ -61,7 +61,7 @@ class TestLocalMacBert:
             / "snapshots" / "deadbeef"
         snap.mkdir(parents=True)
         (snap / "config.json").write_text('{"model_type": "bert"}')
-        (snap / "pytorch_model.bin").write_bytes(b"\x00" * 64)
+        (snap / "pytorch_model.bin").write_bytes(b"\x00" * 200_000)
         (snap / "vocab.txt").write_text("的\n")
         # Noise dirs the user reported (xet, stray json) must not interfere.
         (tmp_path / "macbert_cache" / "xet").mkdir()
@@ -72,6 +72,42 @@ class TestLocalMacBert:
     def test_none_when_absent(self, tmp_path, monkeypatch):
         monkeypatch.setattr(config, "MODEL_SEARCH_DIRS", [str(tmp_path)])
         assert config.get_macbert_model_path() is None
+
+
+class TestMacBertDiagnosis:
+    """The Xet/pointer scenario the user hit: files present but not materialised."""
+
+    def _snapshot(self, tmp_path):
+        snap = tmp_path / "macbert_cache" / "hub" \
+            / "models--shibing624--macbert4csc-base-chinese" / "snapshots" / "h1"
+        snap.mkdir(parents=True)
+        return snap
+
+    def test_empty_config_is_diagnosed(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "MODEL_SEARCH_DIRS", [str(tmp_path)])
+        snap = self._snapshot(tmp_path)
+        (snap / "config.json").write_text("")            # pointer/empty stub
+        (snap / "pytorch_model.bin").write_bytes(b"\x00" * 200_000)
+        assert config.get_macbert_model_path() is None   # not treated as usable
+        diag = config.diagnose_macbert()
+        assert diag is not None and "config.json" in diag
+
+    def test_pointer_weight_is_diagnosed(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "MODEL_SEARCH_DIRS", [str(tmp_path)])
+        snap = self._snapshot(tmp_path)
+        (snap / "config.json").write_text('{"model_type": "bert"}')
+        (snap / "pytorch_model.bin").write_bytes(b"\x00" * 10)  # tiny pointer
+        assert config.get_macbert_model_path() is None
+        diag = config.diagnose_macbert()
+        assert diag is not None and "权重" in diag
+
+    def test_no_diagnosis_when_healthy(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "MODEL_SEARCH_DIRS", [str(tmp_path)])
+        snap = self._snapshot(tmp_path)
+        (snap / "config.json").write_text('{"model_type": "bert"}')
+        (snap / "pytorch_model.bin").write_bytes(b"\x00" * 200_000)
+        assert config.get_macbert_model_path() == str(snap)
+        assert config.diagnose_macbert() is None
 
     def test_engine_receives_local_path(self, tmp_path, monkeypatch):
         # engine_manager._load_macbert should build the engine with the local

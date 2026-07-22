@@ -94,12 +94,17 @@ class MacBertEngine(BaseEngine):
             if ("Expecting value" in msg or "JSONDecode" in msg
                     or "Can't load" in msg or "Connection" in msg
                     or "offline" in msg.lower() or "Max retries" in msg):
+                from docproof.config import diagnose_macbert
+                diag = diagnose_macbert()
+                detail = f"\n\n诊断：{diag}\n" if diag else "\n"
                 raise RuntimeError(
-                    "MacBERT 模型无法加载（文件缺失或不完整）。\n\n"
-                    "离线使用请把完整模型文件夹放到 models/macbert/ 目录，\n"
-                    "其中需包含 config.json、pytorch_model.bin(或 model.safetensors)、\n"
-                    "vocab.txt 等全部文件（可从 HuggingFace 下载：\n"
-                    "  https://huggingface.co/shibing624/macbert4csc-base-chinese ）。\n\n"
+                    "MacBERT 模型无法加载（文件缺失或不完整）。"
+                    + detail +
+                    "\n最可靠的离线用法：把完整模型文件夹放到 models/macbert/ 目录，\n"
+                    "其中需为【实体文件】：config.json、pytorch_model.bin(或 model.safetensors)、\n"
+                    "vocab.txt、tokenizer_config.json 等（从 HuggingFace 页面逐个下载：\n"
+                    "  https://huggingface.co/shibing624/macbert4csc-base-chinese/tree/main ）。\n"
+                    "注意：用 Xet / 部分下载工具得到的缓存可能是未实体化的指针文件，会导致此错误。\n\n"
                     "或：① 连网后重试自动下载；② 改用 Kenlm 统计模型（放入 .klm，完全离线）。"
                 ) from e
             raise
