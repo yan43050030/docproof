@@ -79,6 +79,12 @@ class MacBertEngine(BaseEngine):
 
         import os
         is_local = os.path.isdir(self._model_name_or_path)
+        if is_local:
+            # Loading from a local folder must never touch the network — a failed
+            # online revision check on an offline machine can otherwise surface
+            # as a confusing error. Force transformers/hf_hub into offline mode.
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
         if progress_callback:
             if is_local:
                 progress_callback(f"正在从本地加载 MacBERT 模型：{self._model_name_or_path}")
