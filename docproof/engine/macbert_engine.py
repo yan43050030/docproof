@@ -52,9 +52,13 @@ def _split_into_chunks(line: str, max_len: int = _MAX_CHUNK) -> list[tuple[int, 
 class MacBertEngine(BaseEngine):
     """Proofreading engine using MacBERT4CSC deep learning model."""
 
-    def __init__(self, threshold: float = 0.5):
+    DEFAULT_MODEL = "shibing624/macbert4csc-base-chinese"
+
+    def __init__(self, threshold: float = 0.5, model_name_or_path: str | None = None):
         super().__init__(name="macbert")
         self._threshold = threshold
+        # A local directory (offline) or a HuggingFace repo id (auto-download).
+        self._model_name_or_path = model_name_or_path or self.DEFAULT_MODEL
         self._corrector = None
 
     def load(self, progress_callback: Callable[[str], None] | None = None) -> bool:
@@ -73,11 +77,16 @@ class MacBertEngine(BaseEngine):
                 f"或下载完整版便携包。"
             ) from e
 
+        import os
+        is_local = os.path.isdir(self._model_name_or_path)
         if progress_callback:
-            progress_callback("正在加载 MacBERT 模型（首次使用需联网下载 ~400MB）...")
+            if is_local:
+                progress_callback(f"正在从本地加载 MacBERT 模型：{self._model_name_or_path}")
+            else:
+                progress_callback("正在加载 MacBERT 模型（首次使用需联网下载 ~400MB）...")
 
         try:
-            self._corrector = MacBertCorrector()
+            self._corrector = MacBertCorrector(model_name_or_path=self._model_name_or_path)
         except Exception as e:
             # Empty/partial config.json (offline or interrupted download) surfaces
             # as a JSON error like "Expecting value: line 1 column 1 (char 0)".
@@ -86,11 +95,12 @@ class MacBertEngine(BaseEngine):
                     or "Can't load" in msg or "Connection" in msg
                     or "offline" in msg.lower() or "Max retries" in msg):
                 raise RuntimeError(
-                    "MacBERT 模型未下载或下载不完整。\n\n"
-                    "首次使用需联网从 HuggingFace 下载约 400MB 模型。请：\n"
-                    "  1. 连接网络后重试；或\n"
-                    "  2. 在另一台联网电脑下载后，把 models/macbert_cache 整个文件夹拷贝过来；或\n"
-                    "  3. 改用 Kenlm 统计模型（放入 .klm 文件，完全离线）。"
+                    "MacBERT 模型无法加载（文件缺失或不完整）。\n\n"
+                    "离线使用请把完整模型文件夹放到 models/macbert/ 目录，\n"
+                    "其中需包含 config.json、pytorch_model.bin(或 model.safetensors)、\n"
+                    "vocab.txt 等全部文件（可从 HuggingFace 下载：\n"
+                    "  https://huggingface.co/shibing624/macbert4csc-base-chinese ）。\n\n"
+                    "或：① 连网后重试自动下载；② 改用 Kenlm 统计模型（放入 .klm，完全离线）。"
                 ) from e
             raise
 

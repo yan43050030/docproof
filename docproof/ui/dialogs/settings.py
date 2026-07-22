@@ -208,6 +208,9 @@ class SettingsDialog(QDialog):
             if engine_type == "macbert":
                 # MacBERT: perform a real import check (not just __import__)
                 deps_ok, status = check_macbert_fully_available()
+                from docproof.config import get_macbert_model_path
+                if deps_ok and get_macbert_model_path():
+                    status = "✓ 本地模型已就绪，可离线使用"
                 color = Qt.GlobalColor.black if deps_ok else Qt.GlobalColor.gray
                 size_text = "~400MB"
             else:

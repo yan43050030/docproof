@@ -311,7 +311,12 @@ class EngineManager:
         except ImportError as e:
             return False, f"导入 MacBERT 引擎失败: {e}"
 
-        engine = MacBertEngine(threshold=self._threshold)
+        # Prefer a locally-placed model folder so users can run fully offline;
+        # fall back to the HuggingFace repo id (auto-download) otherwise.
+        from docproof.config import get_macbert_model_path
+        local_path = get_macbert_model_path()
+        engine = MacBertEngine(threshold=self._threshold,
+                               model_name_or_path=local_path)
         try:
             if engine.load(progress_callback=progress_callback):
                 self._engine = engine

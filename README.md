@@ -17,8 +17,9 @@
 - 跨平台（macOS / Windows / Linux）
 
 > **关于"离线"**：Kenlm 模型为本地 `.klm` 文件，放好即可离线。MacBERT 深度模型
-> 首次使用需联网从 HuggingFace 下载约 400MB 权重到 `models/macbert_cache/`，
-> 下载后即可离线运行。程序会优先选择本地已就绪的模型。
+> 可联网自动下载，也可**预先下载后把整个模型文件夹放到 `models/macbert/`**
+> （需含 config.json、pytorch_model.bin 或 model.safetensors、vocab.txt 等），
+> 程序会自动识别并离线加载。程序启动只会自动加载已就绪的本地模型。
 
 > **关于 WPS/.doc**：暂不支持 `.doc`、`.wps` 等旧二进制格式，请在 Word/WPS 中
 > 「另存为」`.docx` 后再打开。

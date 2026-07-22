@@ -169,21 +169,50 @@ def get_model_path(model_key: str) -> str | None:
     return None
 
 
-def is_macbert_cached() -> bool:
-    """Check whether MacBERT weights are already downloaded locally.
+# Weight and config filenames that a usable local MacBERT folder must contain.
+_MACBERT_WEIGHTS = ("pytorch_model.bin", "model.safetensors")
 
-    Used to distinguish "dependencies installed" from "usable fully offline".
-    Recursively scans the entire models directory tree for weight files,
-    so users can place model files anywhere under models/.
+
+def _is_macbert_dir(path: str) -> bool:
+    """True if ``path`` is a directory with a non-empty config.json and weights."""
+    if not os.path.isdir(path):
+        return False
+    cfg = os.path.join(path, "config.json")
+    if not (os.path.isfile(cfg) and os.path.getsize(cfg) > 0):
+        return False
+    return any(
+        os.path.isfile(os.path.join(path, w)) and os.path.getsize(os.path.join(path, w)) > 0
+        for w in _MACBERT_WEIGHTS
+    )
+
+
+def get_macbert_model_path() -> str | None:
+    """Return a local directory holding a usable MacBERT model, or None.
+
+    Lets users pre-download the model on another machine and drop the whole
+    folder into ``models/macbert/`` (or ``models/macbert4csc-base-chinese/``),
+    which is then loaded directly with no network access. Also recognises a
+    proper HuggingFace cache snapshot under ``macbert_cache/``.
     """
-    for search_dir in MODEL_SEARCH_DIRS:
-        if not os.path.isdir(search_dir):
-            continue
-        for root, _dirs, files in os.walk(search_dir):
-            for f in files:
-                if f.endswith((".bin", ".safetensors")):
-                    return True
-    return False
+    # 1) Explicit local model folders (simplest for users copying files over).
+    for d in MODEL_SEARCH_DIRS:
+        for name in ("macbert", "macbert4csc-base-chinese"):
+            cand = os.path.join(d, name)
+            if _is_macbert_dir(cand):
+                return cand
+
+    # 2) A HuggingFace cache snapshot: macbert_cache/models--*/snapshots/<hash>/
+    if os.path.isdir(_MACBERT_CACHE):
+        for root, _dirs, _files in os.walk(_MACBERT_CACHE):
+            if os.path.basename(os.path.dirname(root)) == "snapshots" \
+                    and _is_macbert_dir(root):
+                return root
+    return None
+
+
+def is_macbert_cached() -> bool:
+    """Whether a *usable* MacBERT model (config + weights) exists locally."""
+    return get_macbert_model_path() is not None
 
 
 def is_model_available(model_key: str) -> bool:
