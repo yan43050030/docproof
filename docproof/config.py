@@ -12,16 +12,35 @@ APP_NAME = "DocProof"
 # Source runs resolve everything relative to __file__.
 if getattr(sys, "frozen", False):
     _BASE_DIR: str = sys._MEIPASS
+    # In a PyInstaller onedir build the bundled models live under _internal/
+    # (sys._MEIPASS), but users naturally drop model files next to the .exe.
+    # Search both, preferring the folder beside the executable.
+    _EXE_DIR: str = os.path.dirname(sys.executable)
 else:
     _BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    _EXE_DIR = _BASE_DIR
 
 # Model search paths (checked in order, first found wins)
-# 1. Project-local models/ — portable, copy with the app
-# 2. User data dir — traditional per-user location
+# 1. models/ next to the executable — where users copy files (frozen builds)
+# 2. bundled models/ (under _internal in frozen builds)
+# 3. User data dir — traditional per-user location
 PROJECT_MODELS_DIR = os.path.join(_BASE_DIR, "models")
+EXE_MODELS_DIR = os.path.join(_EXE_DIR, "models")
 USER_DATA_DIR = os.path.expanduser("~/.docproof")
 USER_MODELS_DIR = os.path.join(USER_DATA_DIR, "models")
-MODEL_SEARCH_DIRS = [PROJECT_MODELS_DIR, USER_MODELS_DIR]
+
+
+def _dedup(paths: list[str]) -> list[str]:
+    seen, out = set(), []
+    for p in paths:
+        ap = os.path.abspath(p)
+        if ap not in seen:
+            seen.add(ap)
+            out.append(p)
+    return out
+
+
+MODEL_SEARCH_DIRS = _dedup([EXE_MODELS_DIR, PROJECT_MODELS_DIR, USER_MODELS_DIR])
 
 # Persisted user settings live in the user data dir.
 SETTINGS_PATH = os.path.join(USER_DATA_DIR, "settings.json")
@@ -201,9 +220,14 @@ def get_macbert_model_path() -> str | None:
             if _is_macbert_dir(cand):
                 return cand
 
-    # 2) A HuggingFace cache snapshot: macbert_cache/models--*/snapshots/<hash>/
-    if os.path.isdir(_MACBERT_CACHE):
-        for root, _dirs, _files in os.walk(_MACBERT_CACHE):
+    # 2) A HuggingFace cache snapshot, under any search dir's macbert_cache.
+    #    HF stores it as macbert_cache[/hub]/models--*/snapshots/<hash>/, so we
+    #    walk the whole cache tree and match the snapshots/<hash> layout.
+    cache_dirs = [os.path.join(d, "macbert_cache") for d in MODEL_SEARCH_DIRS]
+    for cache in _dedup(cache_dirs):
+        if not os.path.isdir(cache):
+            continue
+        for root, _dirs, _files in os.walk(cache):
             if os.path.basename(os.path.dirname(root)) == "snapshots" \
                     and _is_macbert_dir(root):
                 return root

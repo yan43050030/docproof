@@ -53,9 +53,24 @@ class TestLocalMacBert:
             f.write('{"model_type": "bert"}')
         assert config.get_macbert_model_path() is None
 
+    def test_hf_cache_snapshot_detected(self, tmp_path, monkeypatch):
+        # Mirror a real HuggingFace cache: macbert_cache/hub/models--*/snapshots/<hash>/
+        monkeypatch.setattr(config, "MODEL_SEARCH_DIRS", [str(tmp_path)])
+        snap = tmp_path / "macbert_cache" / "hub" \
+            / "models--shibing624--macbert4csc-base-chinese" \
+            / "snapshots" / "deadbeef"
+        snap.mkdir(parents=True)
+        (snap / "config.json").write_text('{"model_type": "bert"}')
+        (snap / "pytorch_model.bin").write_bytes(b"\x00" * 64)
+        (snap / "vocab.txt").write_text("的\n")
+        # Noise dirs the user reported (xet, stray json) must not interfere.
+        (tmp_path / "macbert_cache" / "xet").mkdir()
+        (tmp_path / "macbert_cache" / ".agent_harnesses.json").write_text("{}")
+        assert config.get_macbert_model_path() == str(snap)
+        assert config.is_macbert_cached() is True
+
     def test_none_when_absent(self, tmp_path, monkeypatch):
         monkeypatch.setattr(config, "MODEL_SEARCH_DIRS", [str(tmp_path)])
-        monkeypatch.setattr(config, "_MACBERT_CACHE", str(tmp_path / "nocache"))
         assert config.get_macbert_model_path() is None
 
     def test_engine_receives_local_path(self, tmp_path, monkeypatch):
