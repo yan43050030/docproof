@@ -17,7 +17,11 @@ models/*.klm
 models/*.bin
 models/*.pth
 models/*.pt
+models/*.safetensors
 models/macbert_cache/
+# Local MacBERT model folders users place here
+models/macbert/
+models/macbert4csc-base-chinese/
 !models/.gitkeep
 
 # IDE
