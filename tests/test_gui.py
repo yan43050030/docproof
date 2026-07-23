@@ -127,3 +127,39 @@ class TestTheme:
         assert window._settings.get("theme") == "dark"
         window._set_theme("light")
         assert window._settings.get("theme") == "light"
+
+
+class TestEngineLockedDuringProofread:
+    """The model combo must be locked while a proofread worker is running, so the
+    user can't swap (and unload) the engine the worker is actively using."""
+
+    def test_combo_disabled_during_and_restored_after(self, qapp):
+        import os, tempfile
+        from PySide6.QtCore import QEventLoop, QTimer
+        from docx import Document
+        from docproof.ui.main_window import MainWindow
+
+        w = MainWindow(_engine())
+        if w._warmup_thread is not None and w._warmup_thread.isRunning():
+            w._warmup_thread.wait(3000)
+        d = Document()
+        d.add_paragraph("你好,世界")
+        p = tempfile.mktemp(suffix=".docx")
+        d.save(p)
+        try:
+            w._load_document(p)
+            w._start_proofread()
+            # Immediately after start (before the event loop delivers 'finished')
+            # the combo must be disabled.
+            assert w._model_combo.isEnabled() is False
+            # Drain until the worker finishes.
+            loop = QEventLoop()
+            w._worker.finished.connect(lambda e: loop.quit())
+            w._worker.error.connect(lambda m: loop.quit())
+            QTimer.singleShot(20000, loop.quit)
+            loop.exec()
+            w._worker.wait(3000)
+            qapp.processEvents()
+            assert w._model_combo.isEnabled() is True
+        finally:
+            os.remove(p)

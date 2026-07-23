@@ -564,6 +564,9 @@ class MainWindow(QMainWindow):
         self.proofread_btn.setEnabled(False)
         self.cancel_btn.setVisible(True)
         self._progress.setVisible(True)
+        # Lock engine switching while a proofread is running — switching would
+        # unload the engine the worker thread is actively using (race → crash).
+        self._model_combo.setEnabled(False)
         self._set_status("正在校对...")
 
         text = self._docx_handler.get_full_text()
@@ -600,6 +603,7 @@ class MainWindow(QMainWindow):
         self._progress.setVisible(False)
         self.cancel_btn.setVisible(False)
         self.proofread_btn.setEnabled(True)
+        self._model_combo.setEnabled(True)
         self._set_status("校对已取消")
 
     def _on_proofread_done(self, errors):
@@ -608,6 +612,7 @@ class MainWindow(QMainWindow):
         self._progress.setVisible(False)
         self.cancel_btn.setVisible(False)
         self.proofread_btn.setEnabled(True)
+        self._model_combo.setEnabled(True)
         self.export_btn.setEnabled(True)
         self.edit_btn.setEnabled(True)
         self.edit_btn.setChecked(False)
@@ -630,6 +635,7 @@ class MainWindow(QMainWindow):
         self._progress.setVisible(False)
         self.cancel_btn.setVisible(False)
         self.proofread_btn.setEnabled(True)
+        self._model_combo.setEnabled(True)
         QMessageBox.warning(self, "校对错误", msg)
         self._set_status("校对失败", kind="error")
 
@@ -1015,6 +1021,10 @@ class MainWindow(QMainWindow):
         key = self._model_combo.itemData(index)
         if key == self._engine_manager.current_model_key:
             return
+
+        # Never swap the engine while a proofread worker is still using it.
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.wait(5000)
 
         from docproof.config import MODELS
         info = MODELS[key]
