@@ -187,6 +187,12 @@ class MainWindow(QMainWindow):
         open_action.triggered.connect(self._open_file)
         file_menu.addAction(open_action)
 
+        self._close_action = QAction("关闭文档(&W)", self)
+        self._close_action.setShortcut("Ctrl+W")
+        self._close_action.triggered.connect(self._close_document)
+        self._close_action.setEnabled(False)
+        file_menu.addAction(self._close_action)
+
         # Recent files submenu
         self._recent_menu = file_menu.addMenu("最近打开的文件")
         self._refresh_recent_menu()
@@ -278,6 +284,12 @@ class MainWindow(QMainWindow):
         open_btn.clicked.connect(self._open_file)
         open_btn.setStyleSheet(self._btn_style("#2563EB"))
         toolbar.addWidget(open_btn)
+
+        self.close_btn = QPushButton("关闭文档")
+        self.close_btn.clicked.connect(self._close_document)
+        self.close_btn.setEnabled(False)
+        self.close_btn.setStyleSheet(self._btn_style("#6B7280"))
+        toolbar.addWidget(self.close_btn)
 
         toolbar.addSeparator()
 
@@ -485,8 +497,51 @@ class MainWindow(QMainWindow):
         if filepath:
             self._load_document(filepath)
 
+    def _reset_document_state(self):
+        """Stop any work and clear per-document UI state (used before loading a
+        new file and when closing the current one)."""
+        # Stop a running proofread worker so it isn't left using a stale doc.
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.stop()
+            self._worker.wait(5000)
+        self._worker = None
+
+        # Leave edit mode if active.
+        if self.edit_btn.isChecked():
+            self.edit_btn.setChecked(False)
+        self._correction_view.set_edit_mode(False)
+
+        self._proofread_done = False
+        self._current_errors = []
+        self._proofread_text = ""
+
+        self._progress.setVisible(False)
+        self.cancel_btn.setVisible(False)
+        self._model_combo.setEnabled(True)
+
+    def _close_document(self):
+        """Close the current document and return to the empty/drop state."""
+        self._reset_document_state()
+        self._docx_handler = None
+        self._correction_view.load_text("")
+        self._error_list.set_errors([])
+        self._splitter.setVisible(False)
+        self._drop_hint.setVisible(True)
+        self.proofread_btn.setEnabled(False)
+        self.export_btn.setEnabled(False)
+        self.edit_btn.setEnabled(False)
+        self.close_btn.setEnabled(False)
+        self._close_action.setEnabled(False)
+        self._update_title()
+        self._char_count.setText("字数: 0")
+        self._set_status("已关闭文档 — 可拖入或打开新文件")
+
     def _load_document(self, filepath: str):
         """Load a .docx / .txt / .md file and display its content."""
+        # Fully reset any previous document state first, so switching files
+        # always works without restarting the app.
+        self._reset_document_state()
+
         lower = filepath.lower()
         if lower.endswith(_LEGACY_EXTS):
             QMessageBox.information(
@@ -544,6 +599,8 @@ class MainWindow(QMainWindow):
         self._splitter.setVisible(True)
         self.proofread_btn.setEnabled(True)
         self.export_btn.setEnabled(False)
+        self.close_btn.setEnabled(True)
+        self._close_action.setEnabled(True)
 
         self._update_title(filepath)
         self._set_status(f"已加载: {os.path.basename(filepath)}")

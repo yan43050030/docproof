@@ -163,3 +163,45 @@ class TestEngineLockedDuringProofread:
             assert w._model_combo.isEnabled() is True
         finally:
             os.remove(p)
+
+
+class TestCloseAndSwitchDocument:
+    """Closing / switching documents without restarting the app."""
+
+    def test_close_returns_to_empty_state(self, qapp):
+        import os, tempfile
+        from docx import Document
+        from docproof.ui.main_window import MainWindow
+        w = MainWindow(_engine())
+        if w._warmup_thread is not None and w._warmup_thread.isRunning():
+            w._warmup_thread.wait(3000)
+        d = Document(); d.add_paragraph("你好,世界")
+        p = tempfile.mktemp(suffix=".docx"); d.save(p)
+        try:
+            w._load_document(p)
+            assert w._docx_handler is not None
+            assert w.close_btn.isEnabled() and w._close_action.isEnabled()
+            w._close_document()
+            assert w._docx_handler is None
+            assert not w.close_btn.isEnabled()
+            assert w._error_list.list_widget.count() == 0
+        finally:
+            os.remove(p)
+
+    def test_switch_document_without_restart(self, qapp):
+        import os, tempfile
+        from docx import Document
+        from docproof.ui.main_window import MainWindow
+        w = MainWindow(_engine())
+        if w._warmup_thread is not None and w._warmup_thread.isRunning():
+            w._warmup_thread.wait(3000)
+        d1 = Document(); d1.add_paragraph("第一个文件"); p1 = tempfile.mktemp(suffix=".docx"); d1.save(p1)
+        d2 = Document(); d2.add_paragraph("第二个文件"); p2 = tempfile.mktemp(suffix=".docx"); d2.save(p2)
+        try:
+            w._load_document(p1)
+            assert "第一个文件" in w._docx_handler.get_full_text()
+            # Directly load another file (no close, no restart).
+            w._load_document(p2)
+            assert "第二个文件" in w._docx_handler.get_full_text()
+        finally:
+            os.remove(p1); os.remove(p2)
