@@ -62,7 +62,7 @@ class TestLocalMacBert:
         snap.mkdir(parents=True)
         (snap / "config.json").write_text('{"model_type": "bert"}')
         (snap / "pytorch_model.bin").write_bytes(b"\x00" * 200_000)
-        (snap / "vocab.txt").write_text("的\n")
+        (snap / "vocab.txt").write_text("的\n", encoding="utf-8")
         # Noise dirs the user reported (xet, stray json) must not interfere.
         (tmp_path / "macbert_cache" / "xet").mkdir()
         (tmp_path / "macbert_cache" / ".agent_harnesses.json").write_text("{}")
@@ -142,7 +142,7 @@ class TestBadTokenizerJson:
         snap.mkdir(parents=True)
         (snap / "config.json").write_text('{"model_type": "bert", "x": 1}')
         (snap / "pytorch_model.bin").write_bytes(b"\x00" * 200_000)
-        (snap / "vocab.txt").write_text("的\n")
+        (snap / "vocab.txt").write_text("的\n", encoding="utf-8")
         return snap
 
     def test_empty_tokenizer_config_rejected_and_diagnosed(self, tmp_path, monkeypatch):
