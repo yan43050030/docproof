@@ -181,6 +181,25 @@ def _find_file_recursive(filename: str, search_dir: str) -> str | None:
     return None
 
 
+def kenlm_model_size_status(model_key: str) -> tuple[str, int, int]:
+    """Return (status, actual_mb, expected_mb) for a Kenlm model file.
+
+    status is one of: "missing", "incomplete", "ok". A .klm that is markedly
+    smaller than its expected size is almost certainly a truncated/interrupted
+    download and won't open (kenlm raises "Cannot read model ...").
+    """
+    info = MODELS.get(model_key, {})
+    expected = int(info.get("size_mb", 0))
+    path = get_model_path(model_key)
+    if not path or not os.path.exists(path):
+        return "missing", 0, expected
+    actual = int(os.path.getsize(path) / 1024 / 1024)
+    # Allow 10% slack for compression/measurement differences.
+    if expected and actual < expected * 0.9:
+        return "incomplete", actual, expected
+    return "ok", actual, expected
+
+
 def get_model_path(model_key: str) -> str | None:
     """Find a model file across all search directories (recursively). Returns path or None."""
     filename = MODELS[model_key].get("filename")

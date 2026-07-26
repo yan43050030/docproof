@@ -693,7 +693,8 @@ class MainWindow(QMainWindow):
         self.cancel_btn.setVisible(False)
         self.proofread_btn.setEnabled(True)
         self._model_combo.setEnabled(True)
-        QMessageBox.warning(self, "校对错误", msg)
+        from docproof.ui.dialogs.settings import show_copyable_error
+        show_copyable_error(self, "校对错误", msg.split(chr(10))[0], msg)
         self._set_status("校对失败", kind="error")
 
     def _on_error_selected(self, idx: int):
@@ -1099,7 +1100,11 @@ class MainWindow(QMainWindow):
         if ok:
             self._set_status(f"已切换模型: {info['name']}", kind="ok")
         else:
-            self._set_status(f"切换失败: {msg.split(chr(10))[0]}", kind="error")
+            summary = msg.split(chr(10))[0]
+            self._set_status(f"切换失败: {summary}", kind="error")
+            # Long errors (paths + raw engine message) go in a copyable dialog.
+            from docproof.ui.dialogs.settings import show_copyable_error
+            show_copyable_error(self, "模型切换失败", summary, msg)
             # Revert combo selection
             self._refresh_model_combo()
 

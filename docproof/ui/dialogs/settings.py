@@ -22,13 +22,33 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from PySide6.QtWidgets import QMessageBox
+
 from docproof.config import (
     MODELS,
     MODEL_SEARCH_DIRS,
     is_model_available,
     get_model_path,
     check_macbert_fully_available,
+    kenlm_model_size_status,
 )
+
+
+def show_copyable_error(parent, title: str, summary: str, detail: str = "") -> None:
+    """Show an error the user can fully read and copy.
+
+    The one-line summary goes in the main text; the long part (paths, raw engine
+    error) goes in an expandable, selectable, scrollable detail box.
+    """
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Icon.Warning)
+    box.setWindowTitle(title)
+    box.setText(summary)
+    if detail:
+        box.setDetailedText(detail)
+    box.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+    box.setStandardButtons(QMessageBox.StandardButton.Ok)
+    box.exec()
 from docproof.engine.engine_manager import EngineManager
 from docproof.ui.welcome_wizard import WelcomeWizard
 
@@ -84,6 +104,9 @@ class SettingsDialog(QDialog):
 
         self.model_status = QLabel()
         self.model_status.setStyleSheet("color: #888; padding: 4px;")
+        self.model_status.setWordWrap(True)
+        self.model_status.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
         model_layout.addWidget(self.model_status)
 
         btn_layout = QHBoxLayout()
@@ -230,12 +253,16 @@ class SettingsDialog(QDialog):
                 color = Qt.GlobalColor.black if deps_ok else Qt.GlobalColor.gray
                 size_text = "~400MB"
             else:
-                # Kenlm: check if .klm file exists
-                path = get_model_path(key)
-                if path and os.path.exists(path):
-                    size_text = f"{os.path.getsize(path)/1024/1024:.0f}MB"
+                # Kenlm: check the .klm file exists AND is a complete download.
+                sstatus, actual, expected = kenlm_model_size_status(key)
+                if sstatus == "ok":
+                    size_text = f"{actual}MB"
                     status = "✓ 已下载"
                     color = Qt.GlobalColor.black
+                elif sstatus == "incomplete":
+                    size_text = f"{actual}/{expected}MB"
+                    status = "⚠ 下载不完整，请重新下载"
+                    color = Qt.GlobalColor.red
                 else:
                     size_text = f"{info['size_mb']}MB"
                     status = "未下载"
@@ -272,28 +299,42 @@ class SettingsDialog(QDialog):
         info = MODELS[key]
         engine_type = info.get("engine_type", "kenlm")
 
-        # For kenlm, verify file exists
+        # For kenlm, verify the file exists and looks complete.
         if engine_type == "kenlm":
-            path = get_model_path(key)
-            if not path or not os.path.exists(path):
-                self.model_status.setText(
-                    f"模型文件不存在，请下载后放入 models/ 目录:\n"
-                    f"{info.get('url', '')}"
-                )
+            status, actual, expected = kenlm_model_size_status(key)
+            if status == "missing":
+                self.model_status.setText("✗ 模型文件不存在（详见弹窗）")
                 self.model_status.setStyleSheet("color: #DC2626; padding: 4px;")
+                show_copyable_error(
+                    self, "模型文件不存在",
+                    f"未找到 {info['name']} 的模型文件。",
+                    f"请下载后放入 models/ 目录：\n{info.get('url', '')}",
+                )
+                return
+            if status == "incomplete":
+                self.model_status.setText("✗ 模型下载不完整（详见弹窗）")
+                self.model_status.setStyleSheet("color: #DC2626; padding: 4px;")
+                show_copyable_error(
+                    self, "模型下载不完整",
+                    f"{info['name']} 只有 {actual}MB，应约 {expected}MB，"
+                    "文件不完整，无法加载。",
+                    f"请删除后重新完整下载：\n{info.get('url', '')}\n\n"
+                    f"文件位置：{get_model_path(key)}",
+                )
                 return
 
         # For macbert, check dependencies with deep import check
         if engine_type == "macbert":
             deps_ok, detail = check_macbert_fully_available()
             if not deps_ok:
-                self.model_status.setText(
-                    f"MacBERT 无法加载: {detail}\n\n"
-                    "请安装所需依赖:\n"
-                    "  pip install torch transformers loguru tqdm pypinyin\n\n"
-                    "安装完成后重新点击「切换到此模型」。"
-                )
+                self.model_status.setText("✗ MacBERT 无法加载（详见弹窗）")
                 self.model_status.setStyleSheet("color: #DC2626; padding: 4px;")
+                show_copyable_error(
+                    self, "MacBERT 无法加载", f"MacBERT 无法加载：{detail}",
+                    "请安装所需依赖：\n"
+                    "  pip install torch transformers loguru tqdm pypinyin\n\n"
+                    "安装完成后重新点击「切换到此模型」。",
+                )
                 return
 
         ok, msg = self._engine_manager.load(key)
@@ -304,8 +345,11 @@ class SettingsDialog(QDialog):
             )
             self._refresh_model_list()
         else:
-            self.model_status.setText(f"✗ {msg}")
+            # Long errors (paths + raw engine message) go in a copyable dialog.
+            summary = msg.split("\n", 1)[0]
+            self.model_status.setText(f"✗ {summary}（详见弹窗）")
             self.model_status.setStyleSheet("color: #DC2626; padding: 4px;")
+            show_copyable_error(self, "模型加载失败", summary, msg)
 
     def _open_wizard(self):
         """Open the welcome wizard for downloading more models."""

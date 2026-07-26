@@ -62,9 +62,18 @@ class KenlmEngine(BaseEngine):
             self._corrector.correct("初始化")
         except Exception as e:
             self._corrector = None
+            hint = "文件可能损坏或不完整，请重新下载。"
+            # kenlm's C++ file open can't handle non-ASCII (e.g. Chinese) paths
+            # on Windows, so a program installed under a Chinese folder fails to
+            # open a .klm even when it exists.
+            if not model_path.isascii():
+                hint = (
+                    "程序所在路径含中文/非英文字符，Kenlm 引擎可能无法读取该路径下的模型。\n"
+                    "解决办法：把程序整个文件夹移动到纯英文路径（如 D:\\DocProof\\）后重试；\n"
+                    "或改用 MacBERT 引擎（不受路径影响）。若路径已是英文，则文件可能损坏，请重新下载。"
+                )
             raise RuntimeError(
-                f"语言模型无法加载：{model_path}\n"
-                f"文件可能损坏或不完整，请重新下载。\n\n原始错误: {e}"
+                f"语言模型无法加载：{model_path}\n{hint}\n\n原始错误: {e}"
             ) from e
 
         # Guard against pycorrector having swapped in its default model path.
